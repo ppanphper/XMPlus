@@ -44,9 +44,8 @@ class _MyAppState extends State<MyApp> with WindowListener {
   final _navigator = GlobalKey<NavigatorState>();
   final _messenger = GlobalKey<ScaffoldMessengerState>();
   final _playerReturnTarget = GlobalKey(debugLabel: 'playerReturnTarget');
-  final _homePlayerReturnTarget = GlobalKey(
-    debugLabel: 'homePlayerReturnTarget',
-  );
+  final _navigationIndex = ValueNotifier<int>(0);
+  bool _switchingDestination = false;
   final _playerRoutes = _PlayerRouteObserver();
   final _promptRoutes = LogUploadPromptObserver();
   final _sentryRoutes = SentryNavigatorObserver();
@@ -640,70 +639,136 @@ class _MyAppState extends State<MyApp> with WindowListener {
       _tray.dispose();
     }
     _appearance.dispose();
+    _navigationIndex.dispose();
     _playerRoutes.dispose();
     _promptRoutes.dispose();
     super.dispose();
   }
 
-  Widget _buildHomePlayer() {
-    AppLog.instance.trace('lib/app.dart::_MyAppState._buildHomePlayer');
-    return ListenableBuilder(
-      listenable: Listenable.merge([widget.runtime, _playerRoutes]),
-      builder: (context, _) {
-        AppLog.instance.trace(
-          'lib/app.dart::_MyAppState._buildHomePlayer.closure#1',
-        );
-        if (widget.runtime.player.current == null ||
-            MediaQuery.viewInsetsOf(context).bottom > 0) {
-          return const SizedBox.shrink();
-        }
-        final blocked =
-            _playerRoutes.current is PopupRoute ||
-            _playerRoutes.playerTransition != null;
-        return SafeArea(
-          top: false,
-          bottom: false,
-          child: ExcludeSemantics(
-            excluding: blocked,
-            child: AbsorbPointer(
-              absorbing: blocked,
-              child: PlayerPanel(
-                key: _homePlayerReturnTarget,
-                runtime: widget.runtime,
-                navigatorKey: _navigator,
-                onExpand: () {
-                  AppLog.instance.trace(
-                    'lib/app.dart::_MyAppState._buildHomePlayer.closure#1.closure#1',
-                  );
-                  _navigator.currentState?.push(
-                    PlayerPanelRoute(
-                      runtime: widget.runtime,
-                      returnTarget: _homePlayerReturnTarget,
-                    ),
-                  );
-                },
+  Future<void> _selectDestination(int index) async {
+    AppLog.instance.trace('lib/app.dart::_MyAppState._selectDestination');
+    final navigator = _navigator.currentState;
+    if (navigator == null || _switchingDestination || _promptRoutes.hasPopup)
+      return;
+    _switchingDestination = true;
+    try {
+      FocusManager.instance.primaryFocus?.unfocus();
+      // Respect page-level back guards before switching the main destination.
+      while (navigator.canPop()) {
+        final previous = _playerRoutes.current;
+        final handled = await navigator.maybePop();
+        if (!mounted ||
+            !handled ||
+            _promptRoutes.hasPopup ||
+            identical(previous, _playerRoutes.current))
+          return;
+      }
+      if (mounted) _navigationIndex.value = index;
+    } finally {
+      _switchingDestination = false;
+    }
+  }
+
+  Widget _buildIosLayout(BuildContext context, Widget navigator) {
+    AppLog.instance.trace('lib/app.dart::_MyAppState._buildIosLayout');
+    final media = MediaQuery.of(context);
+    final keyboard = media.viewInsets.bottom;
+    final colors = Theme.of(context).colorScheme;
+    final blocked =
+        _promptRoutes.hasPopup || _playerRoutes.current is PopupRoute;
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboard),
+      child: MediaQuery(
+        data: media.copyWith(
+          viewInsets: media.viewInsets.copyWith(bottom: 0),
+          padding: media.padding.copyWith(
+            top: 0,
+            bottom: keyboard > 0 ? 0 : media.padding.bottom,
+          ),
+          viewPadding: media.viewPadding.copyWith(
+            top: 0,
+            bottom: keyboard > 0 ? 0 : media.viewPadding.bottom,
+          ),
+        ),
+        child: Column(
+          children: [
+            Expanded(
+              child: MediaQuery(
+                data: media.copyWith(
+                  viewInsets: media.viewInsets.copyWith(bottom: 0),
+                  padding: media.padding.copyWith(bottom: 0),
+                  viewPadding: media.viewPadding.copyWith(bottom: 0),
+                ),
+                child: Builder(
+                  builder: (context) {
+                    AppLog.instance.trace(
+                      'lib/app.dart::_MyAppState._buildIosLayout.closure#1',
+                    );
+                    return _buildPlayerLayout(
+                      context,
+                      navigator,
+                      hidePlayer: keyboard > 0,
+                    );
+                  },
+                ),
               ),
             ),
-          ),
-        );
-      },
+            ExcludeFocus(
+              excluding: blocked,
+              child: ExcludeSemantics(
+                excluding: blocked,
+                child: AbsorbPointer(
+                  absorbing: blocked,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context)
+                          .navigationBarTheme
+                          .backgroundColor,
+                      border: Border(
+                        top: BorderSide(color: colors.outlineVariant),
+                      ),
+                    ),
+                    child: NavigationBar(
+                      key: const ValueKey('persistentNavigation'),
+                      maintainBottomViewPadding: true,
+                      selectedIndex: _navigationIndex.value,
+                      onDestinationSelected: _selectDestination,
+                      destinations: [
+                        for (final destination in shellDestinations)
+                          NavigationDestination(
+                            label: destination.label,
+                            icon: Icon(destination.icon),
+                            selectedIcon: Icon(destination.selected),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _buildPlayerLayout(BuildContext context, Widget navigator) {
+  Widget _buildPlayerLayout(
+    BuildContext context,
+    Widget navigator, {
+    bool hidePlayer = false,
+  }) {
     AppLog.instance.trace('lib/app.dart::_MyAppState._buildPlayerLayout');
     final mobile =
         Platform.isIOS || Theme.of(context).platform == TargetPlatform.android;
     final route = mobile ? _playerRoutes.playerTransition : null;
     if (Platform.isIOS &&
-        (widget.runtime.player.current == null ||
-            _playerRoutes.homeVisible ||
-            route?.returnTarget == _homePlayerReturnTarget)) {
+        (widget.runtime.player.current == null || hidePlayer)) {
       return navigator;
     }
     final blocked = _playerRoutes.current is PopupRoute || route != null;
     final player = SafeArea(
       top: false,
+      bottom: !Platform.isIOS,
       child: ExcludeFocus(
         excluding: blocked,
         child: ExcludeSemantics(
@@ -829,6 +894,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
                       listenable: Listenable.merge([
                         _playerRoutes,
                         _promptRoutes,
+                        _navigationIndex,
                         widget.runtime,
                       ]),
                       child: child,
@@ -850,7 +916,9 @@ class _MyAppState extends State<MyApp> with WindowListener {
                                 !_exitPending &&
                                 _closeDialog == null;
                           },
-                          child: _buildPlayerLayout(context, child!),
+                          child: Platform.isIOS
+                              ? _buildIosLayout(context, child!)
+                              : _buildPlayerLayout(context, child!),
                         );
                       },
                     ),
@@ -871,7 +939,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
             child: ShellPage(
               appearance: _appearance,
               runtime: widget.runtime,
-              playbackDock: Platform.isIOS ? _buildHomePlayer() : null,
+              navigationIndex: Platform.isIOS ? _navigationIndex : null,
               onMiniPlayer: Platform.isWindows
                   ? () {
                       AppLog.instance.trace(
@@ -953,14 +1021,6 @@ class _PlayerRouteObserver extends NavigatorObserver with ChangeNotifier {
       }
     }
     return null;
-  }
-
-  bool get homeVisible {
-    AppLog.instance.trace('lib/app.dart::_PlayerRouteObserver.homeVisible.get');
-    for (final route in _routes.reversed) {
-      if (route is PageRoute) return route.isFirst;
-    }
-    return true;
   }
 
   bool get playerExpanded {

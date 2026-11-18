@@ -254,7 +254,8 @@ class XmlyClient {
             _playpageEndpoint(method, origin, path) ||
             _albumOverviewEndpoint(method, origin, path) ||
             RegExp(r'^/mobile/track/[1-9][0-9]{0,18}$').hasMatch(path) ||
-            RegExp(r'^/mobile/v1/album/track/ts-[0-9]+$').hasMatch(path) ||
+            RegExp(r'^/mobile/v1/album/track/(?:v3/)?ts-[0-9]+$')
+                .hasMatch(path) ||
             RegExp(
               r'^/album-mobile/album/similar/querySimilarAlbumList/ts-[0-9]+$',
             ).hasMatch(path) ||
@@ -1206,29 +1207,33 @@ class XmlyClient {
       'isAsc': '${ascending != defaultDescending}',
       'device': 'android',
     };
-    final path =
-        '/mobile/v1/album/track/ts-${DateTime.now().millisecondsSinceEpoch}';
     Map<String, dynamic> response;
     var authenticated = accountAvailable;
-    try {
-      response = await request(
-        'GET',
-        mobile,
-        path,
-        query: query,
-        account: authenticated,
-      );
-    } on XmlyException catch (error) {
-      // Expiry still allows public listening; permission/risk failures do not.
-      if (error.code != 'login_expired') rethrow;
-      authenticated = false;
-      response = await request(
-        'GET',
-        mobile,
-        path,
-        query: query,
-        account: false,
-      );
+    var useV3 = false;
+    while (true) {
+      try {
+        response = await request(
+          'GET',
+          mobile,
+          _albumTrackPath(useV3),
+          query: query,
+          account: authenticated,
+        );
+        break;
+      } on XmlyException catch (error) {
+        // Some available albums return 924 only on the legacy catalogue route.
+        // Keep the account and ordering unchanged when trying the official v3.
+        if (error.code == 'content_removed' && !useV3) {
+          useV3 = true;
+          continue;
+        }
+        // Expiry still allows public listening; permission/risk failures do not.
+        if (error.code == 'login_expired' && authenticated) {
+          authenticated = false;
+          continue;
+        }
+        rethrow;
+      }
     }
     return _readAlbumPage(
       response,
@@ -1238,7 +1243,14 @@ class XmlyClient {
       ascending: ascending,
       query: query,
       authenticated: authenticated,
+      useV3: useV3,
     );
+  }
+
+  String _albumTrackPath(bool useV3) {
+    AppLog.instance.trace('lib/api/xmly_client.dart::XmlyClient._albumTrackPath');
+    final version = useV3 ? 'v3/' : '';
+    return '/mobile/v1/album/track/${version}ts-${DateTime.now().millisecondsSinceEpoch}';
   }
 
   Map<String, dynamic> _albumPageData(
@@ -1296,6 +1308,7 @@ class XmlyClient {
     required bool ascending,
     required Map<String, dynamic> query,
     required bool authenticated,
+    required bool useV3,
   }) async {
     AppLog.instance.trace(
       'lib/api/xmly_client.dart::XmlyClient._resolveAlbumPage',
@@ -1328,7 +1341,7 @@ class XmlyClient {
       final response = await request(
         'GET',
         mobile,
-        '/mobile/v1/album/track/ts-${DateTime.now().millisecondsSinceEpoch}',
+        _albumTrackPath(useV3),
         query: {...query, 'pageId': childPage, 'pageSize': childSize},
         account: authenticated,
       );
@@ -1343,6 +1356,7 @@ class XmlyClient {
         ascending: ascending,
         query: query,
         authenticated: authenticated,
+        useV3: useV3,
       );
       for (final row in rows) {
         if (resolved.length >= values.length)
@@ -1367,6 +1381,7 @@ class XmlyClient {
     required bool ascending,
     required Map<String, dynamic> query,
     required bool authenticated,
+    required bool useV3,
   }) async {
     AppLog.instance.trace(
       "lib/api/xmly_client.dart::XmlyClient._readAlbumPage",
@@ -1374,6 +1389,14 @@ class XmlyClient {
 
     final data = _albumPageData(response, number, page, pageSize);
     final total = _total(data['totalCount']);
+    // v3 can return an empty catalogue for unsupported album types. That does
+    // not recover the legacy 924, so retain its unavailable-content result.
+    if (useV3 && total == 0)
+      throw const XmlyException(
+        'content_removed',
+        '该内容已下架',
+        definitive: true,
+      );
     final sparse =
         (data['list'] as List).length !=
         (total - (page - 1) * pageSize).clamp(0, pageSize);
@@ -1386,6 +1409,7 @@ class XmlyClient {
         ascending: ascending,
         query: query,
         authenticated: authenticated,
+        useV3: useV3,
       );
     }
     final albumData = xmlyMap(response['album']);

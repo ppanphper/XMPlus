@@ -5,6 +5,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 
 import '../common/theme.dart';
 import '../common/widgets/adaptive_text.dart';
@@ -21,13 +22,20 @@ import 'listening_page.dart';
 import '../models/xmly_models.dart';
 import 'download_page.dart';
 
+const shellDestinations = [
+  (label: '发现', icon: Icons.home_outlined, selected: Icons.home),
+  (label: '听过', icon: Icons.headphones_outlined, selected: Icons.headphones),
+  (label: '下载', icon: Icons.download_outlined, selected: Icons.download),
+  (label: '设置', icon: Icons.settings_outlined, selected: Icons.settings),
+];
+
 class ShellPage extends StatefulWidget {
   const ShellPage({
     required this.appearance,
     required this.runtime,
     this.onMiniPlayer,
     this.onTray,
-    this.playbackDock,
+    this.navigationIndex,
     super.key,
   });
 
@@ -35,7 +43,7 @@ class ShellPage extends StatefulWidget {
   final AppRuntime runtime;
   final VoidCallback? onMiniPlayer;
   final VoidCallback? onTray;
-  final Widget? playbackDock;
+  final ValueListenable<int>? navigationIndex;
 
   @override
   State<ShellPage> createState() {
@@ -162,13 +170,6 @@ class _ShellPageState extends State<ShellPage> {
     });
   }
 
-  static const _destinations = [
-    (label: '发现', icon: Icons.home_outlined, selected: Icons.home),
-    (label: '听过', icon: Icons.headphones_outlined, selected: Icons.headphones),
-    (label: '下载', icon: Icons.download_outlined, selected: Icons.download),
-    (label: '设置', icon: Icons.settings_outlined, selected: Icons.settings),
-  ];
-
   void _select(int index) {
     AppLog.instance.trace("lib/pages/shell_page.dart::_ShellPageState._select");
     if (_selectedIndex == index) return;
@@ -182,17 +183,35 @@ class _ShellPageState extends State<ShellPage> {
 
   @override
   Widget build(BuildContext context) {
-    AppLog.instance.trace("lib/pages/shell_page.dart::_ShellPageState.build");
+    AppLog.instance.trace('lib/pages/shell_page.dart::_ShellPageState.build');
+    final navigationIndex = widget.navigationIndex;
+    if (navigationIndex == null) return _buildLayout(context, _selectedIndex);
+    return ValueListenableBuilder<int>(
+      valueListenable: navigationIndex,
+      builder: (context, index, _) {
+        AppLog.instance.trace(
+          'lib/pages/shell_page.dart::_ShellPageState.build.closure#1',
+        );
+        return _buildLayout(context, index);
+      },
+    );
+  }
+
+  Widget _buildLayout(BuildContext context, int index) {
+    AppLog.instance.trace(
+      'lib/pages/shell_page.dart::_ShellPageState._buildLayout',
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
         AppLog.instance.trace(
-          "lib/pages/shell_page.dart::_ShellPageState.build.closure#1",
+          "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1",
         );
 
         final availableWidth =
             constraints.maxWidth - MediaQuery.paddingOf(context).horizontal;
-        final useRail = availableWidth >= 840;
+        final externalNavigation = widget.navigationIndex != null;
+        final useRail = !externalNavigation && availableWidth >= 840;
         final expandedRail = availableWidth >= 1440;
         final compact = availableWidth < (usesWindowHeader ? 600 : 320);
         final theme = Theme.of(context);
@@ -200,7 +219,7 @@ class _ShellPageState extends State<ShellPage> {
         final railLabelStyle = expandedRail
             ? theme.textTheme.titleMedium
             : theme.textTheme.labelMedium;
-        final navigation = useRail
+        final navigation = useRail || externalNavigation
             ? null
             : compact
             ? Material(
@@ -208,21 +227,21 @@ class _ShellPageState extends State<ShellPage> {
                   top: false,
                   child: PopupMenuButton<int>(
                     tooltip: '切换页面',
-                    initialValue: _selectedIndex,
+                    initialValue: index,
                     onSelected: _select,
                     itemBuilder: (_) {
                       AppLog.instance.trace(
-                        "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#1",
+                        "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#1",
                       );
                       return [
                         for (
                           var index = 0;
-                          index < _destinations.length;
+                          index < shellDestinations.length;
                           index++
                         )
                           PopupMenuItem(
                             value: index,
-                            child: Text(_destinations[index].label),
+                            child: Text(shellDestinations[index].label),
                           ),
                       ];
                     },
@@ -232,11 +251,11 @@ class _ShellPageState extends State<ShellPage> {
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Row(
                           children: [
-                            Icon(_destinations[_selectedIndex].selected),
+                            Icon(shellDestinations[index].selected),
                             const SizedBox(width: 12),
                             Expanded(
                               child: AdaptiveText(
-                                _destinations[_selectedIndex].label,
+                                shellDestinations[index].label,
                               ),
                             ),
                             const Icon(Icons.unfold_more),
@@ -250,10 +269,10 @@ class _ShellPageState extends State<ShellPage> {
             : NavigationBar(
                 maintainBottomViewPadding: true,
                 onDestinationSelected: _select,
-                selectedIndex: _selectedIndex,
-                destinations: _destinations.map((destination) {
+                selectedIndex: index,
+                destinations: shellDestinations.map((destination) {
                   AppLog.instance.trace(
-                    "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#2",
+                    "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#2",
                   );
 
                   return NavigationDestination(
@@ -267,7 +286,7 @@ class _ShellPageState extends State<ShellPage> {
           appBar: useRail || usesWindowHeader
               ? AppHeader(
                   showBrand: !compact,
-                  title: AdaptiveText(_destinations[_selectedIndex].label),
+                  title: AdaptiveText(shellDestinations[index].label),
                   actions: [
                     if (widget.onMiniPlayer != null)
                       PopupMenuButton<String>(
@@ -275,7 +294,7 @@ class _ShellPageState extends State<ShellPage> {
                         offset: const Offset(0, 12),
                         onSelected: (value) {
                           AppLog.instance.trace(
-                            "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#3",
+                            "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#3",
                           );
 
                           if (value == 'mini') {
@@ -288,7 +307,7 @@ class _ShellPageState extends State<ShellPage> {
                         },
                         itemBuilder: (_) {
                           AppLog.instance.trace(
-                            "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#4",
+                            "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#4",
                           );
                           return [
                             const PopupMenuItem(
@@ -347,10 +366,10 @@ class _ShellPageState extends State<ShellPage> {
                           size: 24,
                         ),
                         onDestinationSelected: _select,
-                        selectedIndex: _selectedIndex,
-                        destinations: _destinations.map((destination) {
+                        selectedIndex: index,
+                        destinations: shellDestinations.map((destination) {
                           AppLog.instance.trace(
-                            "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#5",
+                            "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#5",
                           );
 
                           return NavigationRailDestination(
@@ -377,7 +396,7 @@ class _ShellPageState extends State<ShellPage> {
                         listenable: widget.runtime,
                         builder: (context, _) {
                           AppLog.instance.trace(
-                            "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#6",
+                            "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#6",
                           );
                           return widget.runtime.lifecycleError == null
                               ? const SizedBox.shrink()
@@ -387,7 +406,7 @@ class _ShellPageState extends State<ShellPage> {
                                     TextButton(
                                       onPressed: () {
                                         AppLog.instance.trace(
-                                          "lib/pages/shell_page.dart::_ShellPageState.build.closure#1.closure#6.closure#1",
+                                          "lib/pages/shell_page.dart::_ShellPageState._buildLayout.closure#1.closure#6.closure#1",
                                         );
 
                                         widget.runtime.lifecycleError = null;
@@ -401,7 +420,7 @@ class _ShellPageState extends State<ShellPage> {
                       ),
                       Expanded(
                         child: _ShellPageStack(
-                          index: _selectedIndex,
+                          index: index,
                           children: [
                             HomePage(
                               runtime: widget.runtime,
@@ -428,25 +447,7 @@ class _ShellPageState extends State<ShellPage> {
               ],
             ),
           ),
-          bottomNavigationBar: widget.playbackDock == null
-              ? navigation
-              : DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: theme.navigationBarTheme.backgroundColor,
-                    border: Border(
-                      top: BorderSide(color: colors.outlineVariant),
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      widget.playbackDock!,
-                      if (navigation != null) navigation,
-                      if (useRail)
-                        SizedBox(height: MediaQuery.paddingOf(context).bottom),
-                    ],
-                  ),
-                ),
+          bottomNavigationBar: navigation,
         );
       },
     );
