@@ -1,0 +1,32 @@
+name: iOS build
+on:
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Resolve locked dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Analyze application
+        run: dart analyze lib
+      - name: Check method traces
+        run: dart --packages=.dart_tool/package_config.json tool/check_method_trace.dart
+      - name: Build simulator application
+        run: flutter build ios --simulator --debug --no-pub
+      - name: Build unsigned device application
+        run: flutter build ios --release --no-codesign --no-pub

@@ -3,6 +3,7 @@
 // Original source: https://github.com/bggRGjQaUbCoE/PiliPlus (GNU GPL v3).
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show PredictiveBackEvent;
 
@@ -195,11 +196,40 @@ ThemeData getThemeData({
 
   const fontFamily = 'HarmonyOS Sans SC';
   final dark = brightness == Brightness.dark;
+  final ios = defaultTargetPlatform == TargetPlatform.iOS;
   final isOled = brightness == Brightness.dark && oledBlack;
   var colorScheme = ColorScheme.fromSeed(
     seedColor: seedColor,
     brightness: brightness,
   );
+  if (ios) {
+    // Neutral surfaces keep content, playback and navigation in one palette.
+    // Custom seeds still control the accent; OLED overrides these surfaces below.
+    colorScheme = colorScheme.copyWith(
+      surface: Color(dark ? 0xFF111314 : 0xFFF7F7F7),
+      surfaceDim: Color(dark ? 0xFF111314 : 0xFFDDE0E2),
+      surfaceBright: Color(dark ? 0xFF33383C : 0xFFFFFFFF),
+      surfaceContainerLowest: Color(dark ? 0xFF0B0C0D : 0xFFFFFFFF),
+      surfaceContainerLow: Color(dark ? 0xFF1B1E20 : 0xFFFFFFFF),
+      surfaceContainer: Color(dark ? 0xFF222629 : 0xFFF2F3F4),
+      surfaceContainerHigh: Color(dark ? 0xFF26292C : 0xFFEEEFF0),
+      surfaceContainerHighest: Color(dark ? 0xFF33383C : 0xFFE3E6E8),
+      onSurface: Color(dark ? 0xFFE9ECEE : 0xFF1A1D1F),
+      onSurfaceVariant: Color(dark ? 0xFFA7AFB5 : 0xFF596066),
+      outline: Color(dark ? 0xFF858E95 : 0xFF747D84),
+      outlineVariant: Color(dark ? 0xFF33383C : 0xFFDDE0E2),
+    );
+    if (seedColor.toARGB32() == AppAppearance.defaultSeedColor) {
+      colorScheme = colorScheme.copyWith(
+        primary: Color(dark ? 0xFFA1D1BD : 0xFF245C56),
+        onPrimary: Color(dark ? 0xFF12372B : 0xFFFFFFFF),
+        primaryContainer: Color(dark ? 0xFF1E3A37 : 0xFFE2EEEC),
+        onPrimaryContainer: Color(dark ? 0xFFC5E8D7 : 0xFF245C56),
+        secondaryContainer: Color(dark ? 0xFF1E3A37 : 0xFFE2EEEC),
+        onSecondaryContainer: Color(dark ? 0xFFC5E8D7 : 0xFF245C56),
+      );
+    }
+  }
   if (isOled) {
     colorScheme = colorScheme.copyWith(
       surface: Colors.black,
@@ -277,12 +307,34 @@ ThemeData getThemeData({
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: isOled ? Colors.black : colorScheme.surfaceContainerLow,
       surfaceTintColor: Colors.transparent,
-      indicatorColor: colorScheme.primary.withValues(alpha: .1),
+      height: ios ? 68 : null,
+      elevation: ios ? 0 : null,
+      labelTextStyle: ios
+          ? WidgetStateProperty.resolveWith((states) {
+              AppLog.instance.trace(
+                "lib/common/theme.dart::getThemeData.closure#1",
+              );
+
+              return TextStyle(
+                fontFamily: fontFamily,
+                fontSize: 12,
+                fontWeight: states.contains(WidgetState.selected)
+                    ? FontWeight.w600
+                    : FontWeight.w400,
+                color: states.contains(WidgetState.selected)
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant,
+              );
+            })
+          : null,
+      indicatorColor: ios
+          ? Colors.transparent
+          : colorScheme.primary.withValues(alpha: .1),
       indicatorShape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
       ),
       iconTheme: WidgetStateProperty.resolveWith((states) {
-        AppLog.instance.trace("lib/common/theme.dart::getThemeData.closure#1");
+        AppLog.instance.trace("lib/common/theme.dart::getThemeData.closure#2");
 
         return IconThemeData(
           color: states.contains(WidgetState.selected)
@@ -314,7 +366,7 @@ ThemeData getThemeData({
       thumbVisibility: const WidgetStatePropertyAll(false),
       trackVisibility: const WidgetStatePropertyAll(false),
       thickness: WidgetStateProperty.resolveWith((states) {
-        AppLog.instance.trace("lib/common/theme.dart::getThemeData.closure#2");
+        AppLog.instance.trace("lib/common/theme.dart::getThemeData.closure#3");
 
         return states.contains(WidgetState.hovered) ||
                 states.contains(WidgetState.dragged)
@@ -322,7 +374,7 @@ ThemeData getThemeData({
             : 2.5;
       }),
       thumbColor: WidgetStateProperty.resolveWith((states) {
-        AppLog.instance.trace("lib/common/theme.dart::getThemeData.closure#3");
+        AppLog.instance.trace("lib/common/theme.dart::getThemeData.closure#4");
 
         final opacity = states.contains(WidgetState.dragged)
             ? .48
@@ -359,7 +411,7 @@ ThemeData getThemeData({
       ),
     ),
     cardTheme: CardThemeData(
-      elevation: isOled ? 0 : .5,
+      elevation: ios || isOled ? 0 : .5,
       margin: EdgeInsets.zero,
       color: colorScheme.surfaceContainerLow,
       shadowColor: softShadow,

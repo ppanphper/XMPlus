@@ -1,3 +1,4 @@
+import 'ios_platform.dart';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
@@ -416,7 +417,9 @@ class DownloadPaths {
           );
         }
       }
-      if (Platform.isWindows) {
+      if (Platform.isIOS) {
+        await IosPlatform.commitFile(source, target, overwrite: overwrite);
+      } else if (Platform.isWindows) {
         _WindowsFiles.commit(source, target, overwrite: overwrite);
       } else if (Platform.isLinux ||
           Platform.isMacOS ||
@@ -467,6 +470,7 @@ class DownloadPaths {
         "lib/services/download_paths.dart::DownloadPaths._availableBytes.closure#1",
       );
 
+      if (Platform.isIOS) return IosPlatform.availableBytes(root);
       if (Platform.isAndroid) {
         try {
           return await AndroidPlatform.availableBytes(root);

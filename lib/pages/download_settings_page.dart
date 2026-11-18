@@ -1,7 +1,7 @@
+import '../services/platform_files.dart';
 import 'dart:async';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../common/widgets/adaptive_text.dart';
@@ -350,7 +350,7 @@ class _DownloadSettingsPageState extends State<DownloadSettingsPage>
       );
 
       try {
-        final directory = await FilePicker.getDirectoryPath(
+        final directory = await pickApplicationDirectory(
           dialogTitle: '选择下载目录',
         );
         if (directory != null && mounted)

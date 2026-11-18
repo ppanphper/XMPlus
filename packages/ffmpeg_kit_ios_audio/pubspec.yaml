@@ -1,0 +1,16 @@
+name: ffmpeg_kit_flutter_new_audio
+version: 2.6.2
+publish_to: none
+description: iOS-only distribution of the upstream FFmpegKit audio plugin.
+environment:
+  sdk: '>=3.13.7 <4.0.0'
+  flutter: '>=3.47.9'
+dependencies:
+  flutter:
+    sdk: flutter
+  ffmpeg_kit_flutter_platform_interface: ^0.2.1
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: FFmpegKitFlutterPlugin

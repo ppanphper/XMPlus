@@ -925,13 +925,13 @@ class _AboutSettings extends StatelessWidget {
                   );
 
                   try {
-                    if (Platform.isAndroid) {
+                    if (Platform.isAndroid || Platform.isIOS) {
                       final version = updates.packageInfo?.version;
                       final ref = version == null ? 'main' : 'v$version';
                       if (!await launchUrl(
                         Uri.https(
                           'github.com',
-                          '/teikengstudio/XMPlus/tree/$ref/licenses/android',
+                          Platform.isIOS ? '/ppanphper/XMPlus' : '/teikengstudio/XMPlus/tree/$ref/licenses/android',
                         ),
                         mode: LaunchMode.externalApplication,
                       )) {

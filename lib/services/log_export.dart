@@ -1,3 +1,4 @@
+import 'ios_platform.dart';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -40,6 +41,7 @@ Future<Uri?> exportLogSession(LogSession session, {bool Function()? canStart}) {
     final snapshot = await log.snapshot(name);
     try {
       if (canStart?.call() == false) return null;
+      if (Platform.isIOS) return await IosPlatform.exportLogSnapshot(snapshot, name);
       if (Platform.isAndroid) {
         return await AndroidPlatform.exportLogSnapshot(snapshot, name);
       }

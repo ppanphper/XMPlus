@@ -6,7 +6,13 @@ import "../services/app_log.dart";
 /// The only credential adapter which depends on Flutter platform channels.
 class FlutterCredentialStore implements CredentialStore {
   FlutterCredentialStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage() {
+    : _storage =
+          storage ??
+          const FlutterSecureStorage(
+            iOptions: IOSOptions(
+              accessibility: KeychainAccessibility.first_unlock_this_device,
+            ),
+          ) {
     AppLog.instance.trace(
       "lib/storage/flutter_credential_store.dart::FlutterCredentialStore.new",
     );

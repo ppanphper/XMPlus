@@ -1,3 +1,4 @@
+import '../services/file_paths.dart';
 // ZIP layout adapted from PiliPlus lib/utils/config_archive.dart, commit
 // d9e9626f1a3f89cd9ca85e18f61aaba02634e12a (GNU GPL v3).
 // Source: https://github.com/bggRGjQaUbCoE/PiliPlus
@@ -114,7 +115,7 @@ class ConfigArchive {
     AppLog.instance.trace(
       "lib/storage/config_archive.dart::ConfigArchive._origin.get",
     );
-    return sha256.convert(utf8.encode(storage.directory)).toString();
+    return sha256.convert(utf8.encode(profileDirectoryIdentity(storage.directory))).toString();
   }
 
   Future<List<int>> export({

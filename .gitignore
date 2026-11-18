@@ -46,3 +46,16 @@ android/app/src/main/jniLibs/
 windows/flutter/ephemeral/
 windows/flutter/generated_*
 android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+
+# iOS generated dependencies and local artifacts
+/ios/Pods/
+/ios/.symlinks/
+/ios/Flutter/ephemeral/
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+/ios/Runner/GeneratedPluginRegistrant.*
+**/xcuserdata/
+/packages/ffmpeg_kit_ios_audio/ios/Frameworks/
+
+# Repeatable iOS build artifacts
+/outputs/

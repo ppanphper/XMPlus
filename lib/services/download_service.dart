@@ -3753,7 +3753,7 @@ class DownloadService {
       "lib/services/download_service.dart::DownloadService._requireMediaTools",
     );
 
-    if (Platform.isAndroid)
+    if (Platform.isAndroid || Platform.isIOS)
       await _retry(
         settings,
         () {
@@ -3949,6 +3949,7 @@ class DownloadService {
           return '媒体处理服务未接入，不能重试处理';
         case 'media_tool_missing':
         case 'media_tool':
+          if (Platform.isIOS) return '内置媒体处理组件不可用，请重新安装完整安装包；任务、源缓存及扣时结果已保留';
           return Platform.isAndroid
               ? '随附 Android FFmpeg/FFprobe 无法使用，请重新安装完整安装包；任务、源缓存及已确认的扣时结果保留'
               : '无法启动媒体工具，请检查路径';
@@ -3963,6 +3964,8 @@ class DownloadService {
           return '原始音频流校验失败，请选择其他格式，源缓存已保留';
         case 'media_process':
           return '媒体处理失败，源缓存已保留，请检查输出格式或媒体工具后重试';
+        case 'media_background_expired':
+          return '系统后台处理时间已到，源缓存已保留；请返回应用后重试处理';
         case 'media_timeout':
           return '媒体处理超时，源缓存已保留，请重试处理';
         case 'media_output_limit':

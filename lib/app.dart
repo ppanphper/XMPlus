@@ -44,6 +44,9 @@ class _MyAppState extends State<MyApp> with WindowListener {
   final _navigator = GlobalKey<NavigatorState>();
   final _messenger = GlobalKey<ScaffoldMessengerState>();
   final _playerReturnTarget = GlobalKey(debugLabel: 'playerReturnTarget');
+  final _homePlayerReturnTarget = GlobalKey(
+    debugLabel: 'homePlayerReturnTarget',
+  );
   final _playerRoutes = _PlayerRouteObserver();
   final _promptRoutes = LogUploadPromptObserver();
   final _sentryRoutes = SentryNavigatorObserver();
@@ -347,8 +350,10 @@ class _MyAppState extends State<MyApp> with WindowListener {
                   "lib/app.dart::_MyAppState._handleClose.closure#1.closure#3",
                 );
                 return AlertDialog(
-                  title: const Text('暂停下载并退出？'),
-                  content: const Text('下次打开后可手动继续。'),
+                  title: Text(Platform.isIOS ? '停止播放和下载？' : '暂停下载并退出？'),
+                  content: Text(
+                    Platform.isIOS ? '进度会保存，稍后可手动继续。' : '下次打开后可手动继续。',
+                  ),
                   actions: [
                     TextButton(
                       onPressed: () {
@@ -366,7 +371,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
                         );
                         Navigator.pop(context, true);
                       },
-                      child: const Text('暂停并退出'),
+                      child: Text(Platform.isIOS ? '停止并保存' : '暂停并退出'),
                     ),
                   ],
                 );
@@ -374,6 +379,16 @@ class _MyAppState extends State<MyApp> with WindowListener {
             ),
           );
           if (confirmed != true && !widget.runtime.scheduledExit) return;
+        }
+        if (Platform.isIOS) {
+          try {
+            await widget.runtime.quiesce();
+            await widget.runtime.settle();
+          } finally {
+            widget.runtime.scheduledExit = false;
+          }
+          _showWindowError('播放与下载已停止');
+          return;
         }
         if (await widget.runtime.close()) {
           if (Platform.isWindows) _tray.dispose();
@@ -405,7 +420,9 @@ class _MyAppState extends State<MyApp> with WindowListener {
             AppLog.instance.trace(
               "lib/app.dart::_MyAppState._handleClose.closure#1.closure#4",
             );
-            _windowCloseError = '窗口未能关闭，请重试退出';
+            _windowCloseError = Platform.isIOS
+                ? '停止或保存未完成，请重试'
+                : '窗口未能关闭，请重试退出';
           });
         }
         if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
@@ -628,10 +645,62 @@ class _MyAppState extends State<MyApp> with WindowListener {
     super.dispose();
   }
 
+  Widget _buildHomePlayer() {
+    AppLog.instance.trace('lib/app.dart::_MyAppState._buildHomePlayer');
+    return ListenableBuilder(
+      listenable: Listenable.merge([widget.runtime, _playerRoutes]),
+      builder: (context, _) {
+        AppLog.instance.trace(
+          'lib/app.dart::_MyAppState._buildHomePlayer.closure#1',
+        );
+        if (widget.runtime.player.current == null ||
+            MediaQuery.viewInsetsOf(context).bottom > 0) {
+          return const SizedBox.shrink();
+        }
+        final blocked =
+            _playerRoutes.current is PopupRoute ||
+            _playerRoutes.playerTransition != null;
+        return SafeArea(
+          top: false,
+          bottom: false,
+          child: ExcludeSemantics(
+            excluding: blocked,
+            child: AbsorbPointer(
+              absorbing: blocked,
+              child: PlayerPanel(
+                key: _homePlayerReturnTarget,
+                runtime: widget.runtime,
+                navigatorKey: _navigator,
+                onExpand: () {
+                  AppLog.instance.trace(
+                    'lib/app.dart::_MyAppState._buildHomePlayer.closure#1.closure#1',
+                  );
+                  _navigator.currentState?.push(
+                    PlayerPanelRoute(
+                      runtime: widget.runtime,
+                      returnTarget: _homePlayerReturnTarget,
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildPlayerLayout(BuildContext context, Widget navigator) {
     AppLog.instance.trace('lib/app.dart::_MyAppState._buildPlayerLayout');
-    final android = Theme.of(context).platform == TargetPlatform.android;
-    final route = android ? _playerRoutes.playerTransition : null;
+    final mobile =
+        Platform.isIOS || Theme.of(context).platform == TargetPlatform.android;
+    final route = mobile ? _playerRoutes.playerTransition : null;
+    if (Platform.isIOS &&
+        (widget.runtime.player.current == null ||
+            _playerRoutes.homeVisible ||
+            route?.returnTarget == _homePlayerReturnTarget)) {
+      return navigator;
+    }
     final blocked = _playerRoutes.current is PopupRoute || route != null;
     final player = SafeArea(
       top: false,
@@ -645,7 +714,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
               key: _playerReturnTarget,
               runtime: widget.runtime,
               navigatorKey: _navigator,
-              onExpand: !android
+              onExpand: !mobile
                   ? null
                   : () {
                       AppLog.instance.trace(
@@ -668,7 +737,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
         ),
       ),
     );
-    if (!android) {
+    if (!mobile) {
       return Column(
         children: [
           Expanded(child: navigator),
@@ -802,6 +871,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
             child: ShellPage(
               appearance: _appearance,
               runtime: widget.runtime,
+              playbackDock: Platform.isIOS ? _buildHomePlayer() : null,
               onMiniPlayer: Platform.isWindows
                   ? () {
                       AppLog.instance.trace(
@@ -883,6 +953,14 @@ class _PlayerRouteObserver extends NavigatorObserver with ChangeNotifier {
       }
     }
     return null;
+  }
+
+  bool get homeVisible {
+    AppLog.instance.trace('lib/app.dart::_PlayerRouteObserver.homeVisible.get');
+    for (final route in _routes.reversed) {
+      if (route is PageRoute) return route.isFirst;
+    }
+    return true;
   }
 
   bool get playerExpanded {

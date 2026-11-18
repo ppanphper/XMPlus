@@ -1,4 +1,6 @@
-import 'package:file_picker/file_picker.dart';
+import 'dart:io';
+import '../services/ios_storage.dart';
+import '../services/platform_files.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
@@ -82,6 +84,7 @@ class _StartupPageState extends State<StartupPage> {
           _directory ??= (await getApplicationSupportDirectory()).path;
         }
         candidate = await AppStorage.open(_directory!);
+        if (Platform.isIOS) await restoreIosStoragePaths(candidate);
         AppRuntime.applyLogSettings(candidate.state['settings'] as Map);
         // Validate persisted presentation values before leaving recovery UI.
         final appearance = AppAppearance(candidate);
@@ -182,7 +185,7 @@ class _StartupPageState extends State<StartupPage> {
       );
 
       try {
-        final value = await FilePicker.getDirectoryPath(dialogTitle: '选择资料目录');
+        final value = await pickApplicationDirectory(dialogTitle: '选择资料目录');
         if (value != null && mounted) await _open(value);
       } catch (error, stack) {
         if (!AppLog.instance.errorWasRecorded(error)) {

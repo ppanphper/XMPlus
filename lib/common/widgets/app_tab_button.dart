@@ -9,11 +9,13 @@ class AppTabButton extends StatelessWidget {
     required this.selected,
     required this.onPressed,
     this.icon,
+    this.prominent = false,
     super.key,
   });
 
   final String label;
   final bool selected;
+  final bool prominent;
   final VoidCallback? onPressed;
   final IconData? icon;
 
@@ -45,12 +47,14 @@ class AppTabButton extends StatelessWidget {
                 foregroundColor: selected
                     ? colors.primary
                     : colors.onSurfaceVariant,
-                backgroundColor: selected
+                backgroundColor: selected && !prominent
                     ? colors.primary.withValues(alpha: .055)
                     : Colors.transparent,
                 textStyle: theme.textTheme.labelLarge?.copyWith(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
+                  fontSize: prominent ? 18 : 14,
+                  fontWeight: prominent && selected
+                      ? FontWeight.w700
+                      : FontWeight.w500,
                 ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),

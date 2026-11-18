@@ -1,3 +1,4 @@
+import 'ios_media_runner.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -250,6 +251,7 @@ class MediaProcessor {
             error is MediaInputException ||
             error is XmlyException &&
                 const {
+                  'media_background_expired',
                   'media_format',
                   'media_bitrate',
                   'media_settings',
@@ -283,7 +285,7 @@ class MediaProcessor {
       "lib/services/media_processor.dart::MediaProcessor._override",
     );
 
-    if (Platform.isAndroid) return fallback;
+    if (Platform.isAndroid || Platform.isIOS) return fallback;
     final value = options[key];
     if (value == null || value == '') return fallback;
     if (value is! String || !p.isAbsolute(value)) {
@@ -1436,6 +1438,10 @@ class MediaProcessor {
     );
 
     await checkpoint?.call();
+    if (Platform.isIOS) {
+      return runIosMedia(probe: executable == ffprobePath, arguments: arguments,
+          timeout: timeout, checkpoint: checkpoint);
+    }
     if (Platform.isAndroid) {
       final tools = await AndroidPlatform.mediaToolPaths();
       executable = tools[executable == ffmpegPath ? 'ffmpeg' : 'ffprobe']!;

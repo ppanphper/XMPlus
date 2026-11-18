@@ -1,0 +1,48 @@
+PODS:
+  - ffmpeg_kit_flutter_new_audio (8.1.2):
+    - ffmpeg_kit_flutter_new_audio/audio (= 8.1.2)
+    - Flutter
+  - ffmpeg_kit_flutter_new_audio/audio (8.1.2):
+    - Flutter
+  - Flutter (1.0.0)
+  - flutter_inappwebview_ios (0.0.1):
+    - Flutter
+    - flutter_inappwebview_ios/Core (= 0.0.1)
+    - OrderedSet (~> 6.0.3)
+  - flutter_inappwebview_ios/Core (0.0.1):
+    - Flutter
+    - OrderedSet (~> 6.0.3)
+  - media_kit_libs_ios_audio (1.0.4):
+    - Flutter
+  - OrderedSet (6.0.3)
+
+DEPENDENCIES:
+  - ffmpeg_kit_flutter_new_audio (from `.symlinks/plugins/ffmpeg_kit_flutter_new_audio/ios`)
+  - Flutter (from `Flutter`)
+  - flutter_inappwebview_ios (from `.symlinks/plugins/flutter_inappwebview_ios/ios`)
+  - media_kit_libs_ios_audio (from `.symlinks/plugins/media_kit_libs_ios_audio/ios`)
+
+SPEC REPOS:
+  trunk:
+    - OrderedSet
+
+EXTERNAL SOURCES:
+  ffmpeg_kit_flutter_new_audio:
+    :path: ".symlinks/plugins/ffmpeg_kit_flutter_new_audio/ios"
+  Flutter:
+    :path: Flutter
+  flutter_inappwebview_ios:
+    :path: ".symlinks/plugins/flutter_inappwebview_ios/ios"
+  media_kit_libs_ios_audio:
+    :path: ".symlinks/plugins/media_kit_libs_ios_audio/ios"
+
+SPEC CHECKSUMS:
+  ffmpeg_kit_flutter_new_audio: 9f6a12ae5cdc58d3e31b3b2088c644ee10f866d5
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  flutter_inappwebview_ios: b89ba3482b96fb25e00c967aae065701b66e9b99
+  media_kit_libs_ios_audio: 905e6323b72e65c63ab9262b2e473f52c024a3a8
+  OrderedSet: e539b66b644ff081c73a262d24ad552a69be3a94
+
+PODFILE CHECKSUM: ba01bca3aaf9ce898762961bb09e02d526e64fe1
+
+COCOAPODS: 1.17.0

@@ -41,7 +41,7 @@ class HomeAlbumSection extends StatelessWidget {
               padding: const EdgeInsets.only(top: 16, bottom: 8),
               child: onMore == null
                   ? Text(
-                      section.isRanking
+                      section.isRanking && theme.platform != TargetPlatform.iOS
                           ? '排行榜 · ${section.title}'
                           : section.title,
                       style: theme.textTheme.titleLarge?.copyWith(
@@ -59,7 +59,8 @@ class HomeAlbumSection extends StatelessWidget {
                           children: [
                             Expanded(
                               child: Text(
-                                section.isRanking
+                                section.isRanking &&
+                                        theme.platform != TargetPlatform.iOS
                                     ? '排行榜 · ${section.title}'
                                     : section.title,
                                 style: theme.textTheme.titleLarge?.copyWith(

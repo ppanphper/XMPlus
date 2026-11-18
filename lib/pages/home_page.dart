@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -463,37 +464,54 @@ class _HomePageState extends State<HomePage> {
     AppLog.instance.trace("lib/pages/home_page.dart::_HomePageState.build");
 
     final tabsCurrent = _tabsPageId == _pageId;
+    final compactHeader =
+        Platform.isIOS &&
+        MediaQuery.orientationOf(context) == Orientation.landscape;
+    final header = Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: _discoveryHeader(compact: compactHeader),
+    );
+    final tabs = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: AppTabStrip(
+        children: [
+          for (final (index, label) in const ['推荐', '分类', '排行'].indexed)
+            AppTabButton(
+              label: label,
+              prominent: Platform.isIOS,
+              selected: _section == index,
+              onPressed: () {
+                AppLog.instance.trace(
+                  'lib/pages/home_page.dart::_HomePageState.build.closure#1',
+                );
+                setState(() {
+                  AppLog.instance.trace(
+                    'lib/pages/home_page.dart::_HomePageState.build.closure#1.closure#1',
+                  );
+                  _section = index;
+                  _visitedSections.add(index);
+                });
+              },
+            ),
+        ],
+      ),
+    );
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-          child: _discoveryHeader(),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: AppTabStrip(
+        if (compactHeader)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              for (final (index, label) in const ['推荐', '分类', '排行'].indexed)
-                AppTabButton(
-                  label: label,
-                  selected: _section == index,
-                  onPressed: () {
-                    AppLog.instance.trace(
-                      'lib/pages/home_page.dart::_HomePageState.build.closure#1',
-                    );
-                    setState(() {
-                      AppLog.instance.trace(
-                        'lib/pages/home_page.dart::_HomePageState.build.closure#1.closure#1',
-                      );
-                      _section = index;
-                      _visitedSections.add(index);
-                    });
-                  },
-                ),
+              Expanded(flex: 3, child: header),
+              Expanded(flex: 2, child: tabs),
             ],
-          ),
-        ),
+          )
+        else ...[
+          header,
+          tabs,
+        ],
         Expanded(
+          key: const ValueKey('discoverySections'),
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -553,7 +571,10 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       if (_channels.isNotEmpty)
                         Padding(
-                          padding: const EdgeInsets.only(top: 16, bottom: 4),
+                          padding: EdgeInsets.only(
+                            top: Platform.isIOS ? 0 : 16,
+                            bottom: 4,
+                          ),
                           child: ScrollConfiguration(
                             behavior: ScrollConfiguration.of(context)
                                 .copyWith(scrollbars: false),
@@ -565,19 +586,45 @@ class _HomePageState extends State<HomePage> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   for (final channel in _channels)
-                                    AppTabButton(
-                                      key: ValueKey(channel.pageId),
-                                      label: channel.title,
-                                      selected: channel.pageId == _pageId,
-                                      onPressed: () {
-                                        AppLog.instance.trace(
-                                          "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#1",
-                                        );
-                                        if (channel.pageId != _pageId) {
-                                          _loadHome(channel.pageId);
-                                        }
-                                      },
-                                    ),
+                                    if (Platform.isIOS)
+                                      Padding(
+                                        padding: const EdgeInsets.only(
+                                          right: 8,
+                                        ),
+                                        child: ChoiceChip(
+                                          key: ValueKey(channel.pageId),
+                                          label: Text(
+                                            channel.title == '推荐'
+                                                ? '精选'
+                                                : channel.title,
+                                          ),
+                                          selected: channel.pageId == _pageId,
+                                          showCheckmark: true,
+                                          side: BorderSide.none,
+                                          shape: const StadiumBorder(),
+                                          onSelected: (_) {
+                                            AppLog.instance.trace(
+                                              "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#1",
+                                            );
+                                            if (channel.pageId != _pageId)
+                                              _loadHome(channel.pageId);
+                                          },
+                                        ),
+                                      )
+                                    else
+                                      AppTabButton(
+                                        key: ValueKey(channel.pageId),
+                                        label: channel.title,
+                                        selected: channel.pageId == _pageId,
+                                        onPressed: () {
+                                          AppLog.instance.trace(
+                                            "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#2",
+                                          );
+                                          if (channel.pageId != _pageId) {
+                                            _loadHome(channel.pageId);
+                                          }
+                                        },
+                                      ),
                                 ],
                               ),
                             ),
@@ -620,7 +667,7 @@ class _HomePageState extends State<HomePage> {
                                                   selected: tab.tabId == _tabId,
                                                   onPressed: () {
                                                     AppLog.instance.trace(
-                                                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#2",
+                                                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#3",
                                                     );
                                                     if (tabsCurrent &&
                                                         tab.tabId != _tabId) {
@@ -672,7 +719,7 @@ class _HomePageState extends State<HomePage> {
                       _channels
                           .where((channel) {
                             AppLog.instance.trace(
-                              "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#3",
+                              "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#4",
                             );
 
                             return channel.pageId == _pageId;
@@ -687,7 +734,7 @@ class _HomePageState extends State<HomePage> {
                   onOpenAlbum: _busy ? null : _openAlbum,
                   onBrowse: (section) {
                     AppLog.instance.trace(
-                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#4",
+                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#5",
                     );
 
                     return _openBrowse(section.moreCategoryId);
@@ -698,7 +745,7 @@ class _HomePageState extends State<HomePage> {
                       ? _loadChannels
                       : () {
                           AppLog.instance.trace(
-                            "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#5",
+                            "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#6",
                           );
                           _loadHome(_pageId!, tabId: _tabId);
                         },
@@ -711,7 +758,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _discoveryHeader() {
+  Widget _discoveryHeader({bool compact = false}) {
     AppLog.instance.trace(
       "lib/pages/home_page.dart::_HomePageState._discoveryHeader",
     );
@@ -769,6 +816,7 @@ class _HomePageState extends State<HomePage> {
               ),
           ],
         );
+        if (compact) return search;
         if (constraints.maxWidth <
             720 * MediaQuery.textScalerOf(context).scale(14) / 14) {
           return Column(

@@ -70,10 +70,10 @@ class _MediaSettingsPageState extends State<MediaSettingsPage> {
         : 64;
     _tags = tags['enabled'] is bool ? tags['enabled'] as bool : true;
     _cover = tags['cover'] is bool ? tags['cover'] as bool : false;
-    _ffmpeg.text = !Platform.isAndroid && media['ffmpegPath'] is String
+    _ffmpeg.text = !Platform.isAndroid && !Platform.isIOS && media['ffmpegPath'] is String
         ? media['ffmpegPath'] as String
         : '';
-    _ffprobe.text = !Platform.isAndroid && media['ffprobePath'] is String
+    _ffprobe.text = !Platform.isAndroid && !Platform.isIOS && media['ffprobePath'] is String
         ? media['ffprobePath'] as String
         : '';
   }
@@ -107,7 +107,7 @@ class _MediaSettingsPageState extends State<MediaSettingsPage> {
       "lib/pages/media_settings_page.dart::_MediaSettingsPageState._validateFiles",
     );
 
-    if (Platform.isAndroid) return;
+    if (Platform.isAndroid || Platform.isIOS) return;
     for (final entry in {
       'FFmpeg': _ffmpeg.text.trim(),
       'FFprobe': _ffprobe.text.trim(),
@@ -316,7 +316,7 @@ class _MediaSettingsPageState extends State<MediaSettingsPage> {
             'ffmpegPath': _ffmpeg.text.trim(),
             'ffprobePath': _ffprobe.text.trim(),
           }.entries) {
-            if (Platform.isAndroid || entry.value.isEmpty) {
+            if (Platform.isAndroid || Platform.isIOS || entry.value.isEmpty) {
               media.remove(entry.key);
             } else {
               media[entry.key] = entry.value;
@@ -578,7 +578,7 @@ class _MediaSettingsPageState extends State<MediaSettingsPage> {
                   padding: EdgeInsets.only(top: 16),
                   child: Text('Android 使用安装包随附的 FFmpeg / FFprobe，无需设置桌面工具路径。'),
                 )
-              else ...[
+              else if (!Platform.isIOS) ...[
                 _toolField('FFmpeg', _ffmpeg),
                 _toolField('FFprobe', _ffprobe),
               ],

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../api/xmly_client.dart';
@@ -1914,9 +1916,9 @@ class _SleepTimerPageState extends State<_SleepTimerPage> {
                   const SizedBox(height: 12),
                   _PlaybackChoices<SleepAction>(
                     key: const ValueKey('sleepActionOptions'),
-                    options: const [
+                    options: [
                       (SleepAction.pause, '暂停播放'),
-                      (SleepAction.exit, '保存并退出'),
+                      (SleepAction.exit, Platform.isIOS ? '保存并停止' : '保存并退出'),
                     ],
                     selected: _action,
                     onSelected: _saving

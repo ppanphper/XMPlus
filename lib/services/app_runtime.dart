@@ -1,3 +1,4 @@
+import 'ios_platform.dart';
 import 'dart:async';
 import 'dart:io';
 
@@ -320,7 +321,7 @@ class AppRuntime extends ChangeNotifier {
       _cachedDownloadStates[task.id] = task.state;
     }
     await player.load();
-    if (Platform.isAndroid || Platform.isWindows) {
+    if (Platform.isAndroid || Platform.isWindows || Platform.isIOS) {
       _systemMedia = await SystemMediaService.start(
         player: player,
         albumCache: albumCache,
@@ -525,10 +526,12 @@ class AppRuntime extends ChangeNotifier {
     final settings = storage.state['settings'] as Map;
     final configured = (settings['download'] as Map?)?['rootDirectory'];
     if (configured is String && configured.isNotEmpty)
-      return absoluteFilePath(configured);
+      return absoluteFilePath(Platform.isIOS ? await IosPlatform.resolvePath(configured) : configured);
     final parent = Platform.isAndroid
         ? await getExternalStorageDirectory() ??
               await getApplicationSupportDirectory()
+        : Platform.isIOS
+        ? await getApplicationDocumentsDirectory()
         : await getDownloadsDirectory() ??
               await getApplicationDocumentsDirectory();
     final directory = await Directory(p.join(parent.path, 'XMPlus'))

@@ -1,3 +1,4 @@
+import 'file_paths.dart';
 import 'dart:convert';
 import 'dart:io';
 
@@ -76,7 +77,7 @@ class AccountService {
     AppLog.instance.trace(
       "lib/services/account_service.dart::AccountService._prefix.get",
     );
-    return 'xmly.${sha256.convert(utf8.encode(storage.directory))}.';
+    return 'xmly.${sha256.convert(utf8.encode(profileDirectoryIdentity(storage.directory)))}.';
   }
 
   String get _urlCacheDirectory {

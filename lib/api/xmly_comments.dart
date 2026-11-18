@@ -428,8 +428,9 @@ class XmlyComments {
     if (pageId != page ||
         size < 1 ||
         size > requestedSize ||
+        // The official API can return additional rows (observed 21 with
+        // pageSize 20). Page navigation still follows the server's bounds.
         list is! List ||
-        list.length > size ||
         (pages > 0 && page > pages && list.isNotEmpty)) {
       throw XmlyException(
         'invalid_comments',

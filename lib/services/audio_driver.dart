@@ -301,7 +301,7 @@ class MediaKitAudioDriver implements AudioDriver {
       "lib/services/audio_driver.dart::MediaKitAudioDriver._run",
     );
 
-    if (!Platform.isAndroid) return _perform(operation, action, arguments);
+    if (!Platform.isAndroid && !Platform.isIOS) return _perform(operation, action, arguments);
     final result = _commands.then((_) async {
       AppLog.instance.trace(
         "lib/services/audio_driver.dart::MediaKitAudioDriver._run.closure#1",
@@ -451,7 +451,7 @@ class MediaKitAudioDriver implements AudioDriver {
 
     final player = _player;
     if (player == null || !_canPlay(intent)) return;
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       final session = await _audioSession();
       if (!_canPlay(intent)) return;
       final granted = await session.setActive(true);
@@ -462,7 +462,7 @@ class MediaKitAudioDriver implements AudioDriver {
       if (!_canPlay(intent)) return;
     }
     await player.play();
-    if (Platform.isAndroid && !_canPlay(intent)) {
+    if ((Platform.isAndroid || Platform.isIOS) && !_canPlay(intent)) {
       await player.pause();
     }
   }
@@ -505,6 +505,7 @@ class MediaKitAudioDriver implements AudioDriver {
 
         _opening = true;
         try {
+          if (Platform.isIOS) await _audioSession();
           final player = _player ?? _create();
           await player.stop();
           await _releaseFocus();

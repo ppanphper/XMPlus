@@ -2,6 +2,7 @@
 // lib/utils/update.dart and lib/pages/main/controller.dart, commit
 // d9e9626f1a3f89cd9ca85e18f61aaba02634e12a (GNU GPL v3).
 // Source: https://github.com/bggRGjQaUbCoE/PiliPlus
+import 'ios_platform.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' show Abi;
@@ -113,7 +114,7 @@ class UpdateRelease {
     AppLog.instance.trace(
       "lib/services/update_service.dart::UpdateRelease.page.get",
     );
-    return Uri.https('github.com', '/teikengstudio/XMPlus/releases/tag/$tag');
+    return Uri.https('github.com', '/${Platform.isIOS ? 'ppanphper' : 'teikengstudio'}/XMPlus/releases/tag/$tag');
   }
 
   bool isNewerThan(String currentVersion) {
@@ -247,6 +248,7 @@ class UpdateService extends ChangeNotifier {
     AppLog.instance.trace(
       'lib/services/update_service.dart::UpdateService.source.get',
     );
+    if (Platform.isIOS) return UpdateSource.github;
     return switch (_preferences['source']) {
       'github' => UpdateSource.github,
       'xin' => UpdateSource.xin,
@@ -363,7 +365,7 @@ class UpdateService extends ChangeNotifier {
     final suffix = tag == null ? 'latest' : 'tags/${Uri.encodeComponent(tag)}';
     try {
       final response = await _http.get<String>(
-        'https://api.github.com/repos/teikengstudio/XMPlus/releases/$suffix',
+        'https://api.github.com/repos/${Platform.isIOS ? 'ppanphper' : 'teikengstudio'}/XMPlus/releases/$suffix',
         options: Options(responseType: ResponseType.plain),
         cancelToken: token ?? _cancel,
       );
@@ -468,7 +470,7 @@ class UpdateService extends ChangeNotifier {
     } on DioException catch (failure) {
       // Only failure to establish a connection triggers the automatic fallback.
       // HTTP failures, TLS errors and response timeouts stay on the chosen source.
-      if (selected != UpdateSource.automatic ||
+      if (Platform.isIOS || selected != UpdateSource.automatic ||
           failure.type != DioExceptionType.connectionTimeout)
         rethrow;
       return _xinLatest();
@@ -479,6 +481,7 @@ class UpdateService extends ChangeNotifier {
     AppLog.instance.trace(
       'lib/services/update_service.dart::UpdateService._assetNames',
     );
+    if (Platform.isIOS) return ['XMPlus-${release.version}-ios.ipa'];
     if (Platform.isAndroid) {
       final info = await DeviceInfoPlugin().androidInfo;
       return [
@@ -711,7 +714,7 @@ class UpdateService extends ChangeNotifier {
     final handle = await download.file.open();
     try {
       final header = await handle.read(4);
-      final valid = Platform.isAndroid
+      final valid = (Platform.isAndroid || Platform.isIOS)
           ? header[0] == 0x50 &&
                 header[1] == 0x4b &&
                 header[2] == 3 &&
@@ -810,7 +813,11 @@ class UpdateService extends ChangeNotifier {
     AppLog.instance.trace(
       'lib/services/update_service.dart::UpdateService._install',
     );
-    if (Platform.isAndroid) {
+    if (Platform.isIOS) {
+      if (await IosPlatform.exportFile(download.file.path) == null) {
+        throw const FormatException('尚未导出安装包，可再次保存后使用侧载工具安装');
+      }
+    } else if (Platform.isAndroid) {
       await AndroidPlatform.installUpdate(download.file.path);
     } else if (Platform.isWindows) {
       await const MethodChannel('teikengstudio.xmplus/update')
@@ -1121,7 +1128,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
           'lib/services/update_service.dart::_UpdateDownloadDialogState._install.closure#2',
         );
         _installing = false;
-        _stage = '已打开系统安装器。如未完成安装，可再次点击安装。';
+        _stage = Platform.isIOS ? '安装包已导出，请使用签名或侧载工具安装。' : '已打开系统安装器。如未完成安装，可再次点击安装。';
       });
     } catch (failure, stack) {
       widget.service._localFailure(
@@ -1193,9 +1200,9 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
               Text(
                 _error ??
                     (_installing
-                        ? '正在打开系统安装器…'
+                        ? (Platform.isIOS ? '正在导出安装包…' : '正在打开系统安装器…')
                         : _download != null
-                        ? (_handedOff ? _stage : '下载完成，点击安装')
+                        ? (_handedOff ? _stage : Platform.isIOS ? '校验完成，保存安装包后侧载安装' : '下载完成，点击安装')
                         : _stage),
               ),
               if (_busy || _installing) ...[
@@ -1217,7 +1224,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
           if (_download != null)
             FilledButton(
               onPressed: _installing ? null : _install,
-              child: Text(_error == null ? '安装' : '重试安装'),
+              child: Text(Platform.isIOS ? '保存安装包' : _error == null ? '安装' : '重试安装'),
             )
           else if (_error != null)
             FilledButton(onPressed: _retryDownload, child: const Text('重试下载')),

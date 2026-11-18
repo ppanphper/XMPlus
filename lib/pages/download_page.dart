@@ -1,10 +1,12 @@
+import '../services/ios_platform.dart';
+import '../services/platform_files.dart';
+
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
-import 'package:file_picker/file_picker.dart';
 
 import '../common/widgets/app_scrollbar.dart';
 import '../common/widgets/adaptive_text.dart';
@@ -1156,9 +1158,7 @@ class _DownloadPageState extends State<DownloadPage> {
       },
     );
     if (accepted != true) return;
-    final directory = await FilePicker.getDirectoryPath(
-      dialogTitle: '选择本任务的下载目录',
-    );
+    final directory = await pickApplicationDirectory(dialogTitle: '选择本任务的下载目录');
     if (directory == null) return;
     await widget.runtime.relocateDownload(task.id, directory);
   }
@@ -1808,7 +1808,11 @@ class _DownloadPageState extends State<DownloadPage> {
         : p.dirname(task.finalPath!);
     if (!await Directory(path).exists())
       throw const FileSystemException('Directory missing');
-    if (Platform.isAndroid) {
+    if (Platform.isIOS && task.finalPath != null) {
+      await IosPlatform.openAudioFile(task.finalPath!);
+      return;
+    }
+    if (Platform.isAndroid || Platform.isIOS) {
       if (task.finalPath case final file?) {
         await AndroidPlatform.openAudioFile(file);
       } else if (mounted) {
@@ -2458,7 +2462,10 @@ class _DownloadPageState extends State<DownloadPage> {
               const PopupMenuItem(value: 'next', child: Text('下一集播放')),
             if (_available[task.id] == false)
               const PopupMenuItem(value: 'retry', child: Text('重新下载')),
-            const PopupMenuItem(value: 'open', child: Text('打开目录')),
+            PopupMenuItem(
+              value: 'open',
+              child: Text(Platform.isIOS ? '分享音频' : '打开目录'),
+            ),
             if (available)
               const PopupMenuItem(value: 'delete', child: Text('删除音频')),
             const PopupMenuItem(value: 'remove', child: Text('删除任务')),
@@ -3192,7 +3199,7 @@ class _DownloadPageState extends State<DownloadPage> {
                   return _open(task);
                 }, recoverable: true);
               },
-              child: const Text('打开目录'),
+              child: Text(Platform.isIOS ? '分享音频' : '打开目录'),
             ),
             if (task.finalPath != null)
               TextButton(

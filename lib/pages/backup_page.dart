@@ -1,3 +1,4 @@
+import '../services/platform_files.dart';
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -266,7 +267,7 @@ class _BackupPageState extends State<BackupPage> {
         ))
           return;
         if (!_operationActive) return;
-        final selected = await FilePicker.getDirectoryPath(
+        final selected = await pickApplicationDirectory(
           dialogTitle: '选择新的下载目录',
         );
         if (selected == null || !_operationActive) return;

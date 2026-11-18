@@ -2,6 +2,7 @@
 // d9e9626f1a3f89cd9ca85e18f61aaba02634e12a (GNU GPL v3).
 // Source: https://github.com/bggRGjQaUbCoE/PiliPlus
 // Desktop setup only; audio and account services are not initialized here.
+import 'services/ios_platform.dart';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -20,6 +21,7 @@ Future<void> main(List<String> arguments) async {
   AppLog.instance.trace("lib/main.dart::main");
 
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isIOS) await IosPlatform.initialize();
   String? dataDirectory;
   try {
     dataDirectory = startupDataDirectory(arguments);

@@ -34,8 +34,8 @@ class SystemMediaService extends BaseAudioHandler {
         "lib/services/system_media_service.dart::SystemMediaService.start.closure#1",
       );
 
-      if (!Platform.isAndroid && !Platform.isWindows) {
-        throw UnsupportedError('系统媒体控制仅支持 Android 和 Windows');
+      if (!Platform.isAndroid && !Platform.isWindows && !Platform.isIOS) {
+        throw UnsupportedError('当前平台不支持系统媒体控制');
       }
       if (Platform.isWindows) WindowsAudioServicePlatform.registerWith();
       final handler = SystemMediaService._(player, albumCache, commandsAllowed);

@@ -13,6 +13,7 @@ import '../api/xmly_client.dart';
 import '../models/xmly_models.dart';
 import 'app_log.dart';
 import 'file_paths.dart';
+import 'ios_platform.dart';
 import 'network_retry.dart';
 import 'http_log_attempt.dart';
 
@@ -34,6 +35,7 @@ class AudioCache {
   final Lock _disk = Lock();
   Completer<void> _changed = Completer<void>();
   HttpClient? _client;
+  String? _iosRequestId;
   Future<void>? _running;
   Completer<void>? _interruptedWait;
   int _producerEpoch = 0;
@@ -263,9 +265,13 @@ class AudioCache {
       }
     }
     if (latest == null) return;
+    final storedDirectory = latest['directory'];
+    final cacheDirectory = Platform.isIOS && storedDirectory is String
+        ? await IosPlatform.resolvePath(storedDirectory)
+        : storedDirectory;
     if (latest['account'] != _audio.accountIdentity ||
         latest['track'] != _audio.track.id ||
-        latest['directory'] != directory) {
+        cacheDirectory != directory) {
       throw const XmlyException('cache_identity', '缓存不属于当前账号或任务');
     }
     _revision = latest['revision'] as int;
@@ -755,6 +761,8 @@ class AudioCache {
 
   Future<void> _discard(HttpClientResponse response) {
     AppLog.instance.trace("lib/services/audio_cache.dart::AudioCache._discard");
+    if (response is IosAudioResponse)
+      return IosPlatform.releaseDownload(response.id);
     return response.listen(null).cancel();
   }
 
@@ -874,55 +882,84 @@ class AudioCache {
         rethrow;
       }
       _checkProducer(epoch);
-      _client ??= HttpClient()
-        ..connectionTimeout = const Duration(seconds: 10)
-        ..autoUncompress = false;
-      final request = await _whileActive(epoch, () {
-        AppLog.instance.trace(
-          "lib/services/audio_cache.dart::AudioCache._request.closure#1",
-        );
-        return _transport(() {
+      late HttpClientResponse response;
+      if (Platform.isIOS) {
+        final id = sha256
+            .convert(utf8.encode('$directory|$uri|$start|$end|$validator'))
+            .toString();
+        _iosRequestId = id;
+        try {
+          response = await _whileActive(epoch, () {
+            AppLog.instance.trace(
+              "lib/services/audio_cache.dart::AudioCache._request.closure#1",
+            );
+            return _transport(() {
+              AppLog.instance.trace(
+                "lib/services/audio_cache.dart::AudioCache._request.closure#1.closure#1",
+              );
+              return IosPlatform.download(
+                id: id,
+                uri: uri,
+                headers: diagnostic.requestHeaders,
+                validateFinalUri: _validateUri,
+              );
+            });
+          });
+          _checkProducer(epoch);
+        } finally {
+          if (_iosRequestId == id) _iosRequestId = null;
+        }
+      } else {
+        _client ??= HttpClient()
+          ..connectionTimeout = const Duration(seconds: 10)
+          ..autoUncompress = false;
+        final request = await _whileActive(epoch, () {
           AppLog.instance.trace(
-            "lib/services/audio_cache.dart::AudioCache._request.closure#1.closure#1",
+            "lib/services/audio_cache.dart::AudioCache._request.closure#2",
           );
-          return _client!.getUrl(uri).timeout(const Duration(seconds: 25));
+          return _transport(() {
+            AppLog.instance.trace(
+              "lib/services/audio_cache.dart::AudioCache._request.closure#2.closure#1",
+            );
+            return _client!.getUrl(uri).timeout(const Duration(seconds: 25));
+          });
         });
-      });
-      request.followRedirects = false;
-      // Deliberately ignore ResolvedAudio.headers. API cookies, x-tk and all other
-      // identity headers must never reach either a CDN or its redirect target.
-      request.headers.set(HttpHeaders.userAgentHeader, 'XMPlus/1.0');
-      request.headers.set(
-        HttpHeaders.acceptHeader,
-        'audio/*, application/octet-stream',
-      );
-      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-      request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
-      if (validator != null)
-        request.headers.set(HttpHeaders.ifRangeHeader, validator);
-      request.headers.forEach((name, values) {
-        AppLog.instance.trace(
-          "lib/services/audio_cache.dart::AudioCache._request.closure#2",
+        request.followRedirects = false;
+        // Deliberately ignore ResolvedAudio.headers. API cookies, x-tk and all other
+        // identity headers must never reach either a CDN or its redirect target.
+        request.headers.set(HttpHeaders.userAgentHeader, 'XMPlus/1.0');
+        request.headers.set(
+          HttpHeaders.acceptHeader,
+          'audio/*, application/octet-stream',
         );
+        request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
+        if (validator != null)
+          request.headers.set(HttpHeaders.ifRangeHeader, validator);
+        request.headers.forEach((name, values) {
+          AppLog.instance.trace(
+            "lib/services/audio_cache.dart::AudioCache._request.closure#3",
+          );
 
-        diagnostic.requestHeaders[name] = List<String>.of(values);
-      });
-      final response = await _whileActive(epoch, () {
-        AppLog.instance.trace(
-          "lib/services/audio_cache.dart::AudioCache._request.closure#3",
-        );
-        return _transport(() {
-          AppLog.instance.trace(
-            "lib/services/audio_cache.dart::AudioCache._request.closure#3.closure#1",
-          );
-          return request.close().timeout(const Duration(seconds: 25));
+          diagnostic.requestHeaders[name] = List<String>.of(values);
         });
-      });
+        response = await _whileActive(epoch, () {
+          AppLog.instance.trace(
+            "lib/services/audio_cache.dart::AudioCache._request.closure#4",
+          );
+          return _transport(() {
+            AppLog.instance.trace(
+              "lib/services/audio_cache.dart::AudioCache._request.closure#4.closure#1",
+            );
+            return request.close().timeout(const Duration(seconds: 25));
+          });
+        });
+      }
       diagnostic.status = response.statusCode;
       diagnostic.responseByteCount = 0;
       response.headers.forEach((name, values) {
         AppLog.instance.trace(
-          "lib/services/audio_cache.dart::AudioCache._request.closure#4",
+          "lib/services/audio_cache.dart::AudioCache._request.closure#5",
         );
 
         diagnostic.responseHeaders[name] = List<String>.of(values);
@@ -1676,6 +1713,10 @@ class AudioCache {
     _producerEpoch++;
     final interrupted = _interruptedWait;
     if (interrupted != null && !interrupted.isCompleted) interrupted.complete();
+    if (_iosRequestId case final id?) {
+      _iosRequestId = null;
+      await IosPlatform.cancelDownload(id);
+    }
     _client?.close(force: true);
     _client = null;
     _signal();

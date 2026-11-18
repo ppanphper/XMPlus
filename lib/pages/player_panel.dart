@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -2038,6 +2039,113 @@ class _PlayerPanelState extends State<PlayerPanel> {
 
         if (!widget.expanded) {
           if (!widget.miniWindow) {
+            if (Platform.isIOS) {
+              final subtitle = message ?? track?.artist ?? '';
+              return Material(
+                color: theme.navigationBarTheme.backgroundColor,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: _PlayerExpandTarget(
+                              onTap: widget.onExpand ?? _expand,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 4,
+                                ),
+                                child: Row(
+                                  children: [
+                                    _cover(coverUrl, 40, small: true),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            title,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: theme.textTheme.bodyMedium
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                          ),
+                                          if (subtitle.isNotEmpty) ...[
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              subtitle,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
+                                                    color: message == null
+                                                        ? colors
+                                                              .onSurfaceVariant
+                                                        : colors.error,
+                                                  ),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            key: const ValueKey('dockPlayPause'),
+                            tooltip: playLabel,
+                            onPressed: play,
+                            color: colors.primary,
+                            iconSize: 30,
+                            constraints: const BoxConstraints(
+                              minWidth: 48,
+                              minHeight: 48,
+                            ),
+                            icon:
+                                player.loading ||
+                                    player.buffering ||
+                                    _busy ||
+                                    _cancelling
+                                ? SizedBox.square(
+                                    dimension: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: colors.primary,
+                                    ),
+                                  )
+                                : Icon(
+                                    canPause
+                                        ? Icons.pause_rounded
+                                        : Icons.play_arrow_rounded,
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: LinearProgressIndicator(
+                        minHeight: 1,
+                        value: max > 0 ? (position / max).clamp(0.0, 1.0) : 0,
+                        color: colors.primary,
+                        backgroundColor: colors.outlineVariant,
+                        semanticsLabel:
+                            '播放进度 ${playbackTime(position)} / ${playbackTime(max)}',
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
             final timeStyle = theme.textTheme.bodySmall?.copyWith(
               color: colors.onSurfaceVariant,
               fontFeatures: const [FontFeature.tabularFigures()],
@@ -2279,7 +2387,7 @@ class _PlayerPanelState extends State<PlayerPanel> {
         final sleepLabel = sleep == null
             ? '定时关闭'
             : player.policy.sleepWaitingForEnd || remaining == null
-            ? '本集结束后${sleep.action.name == 'exit' ? '退出' : '暂停'}'
+            ? '本集结束后${sleep.action.name == 'exit' ? (Platform.isIOS ? '停止' : '退出') : '暂停'}'
             : playbackTime(remaining.inSeconds.toDouble());
         final creatorAlbum = _creatorAlbum?.id == track?.albumId
             ? _creatorAlbum
