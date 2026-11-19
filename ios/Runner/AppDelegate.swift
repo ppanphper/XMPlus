@@ -20,6 +20,7 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "XMPlusIosPlatform") {
       IosPlatformBridge.shared.register(registrar.messenger())
+      XMPlusAudioStream.register(with: registrar.messenger())
     }
   }
 }

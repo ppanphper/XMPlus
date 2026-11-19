@@ -24,6 +24,14 @@ class XmlyRewards {
   final _lock = Lock();
   bool automaticEnabled;
   String lastError = '';
+  String? lastErrorCode;
+  bool get needsReview {
+    AppLog.instance.trace(
+      'lib/api/xmly_rewards.dart::XmlyRewards.needsReview.get',
+    );
+    return lastErrorCode == 'reward_result_unknown';
+  }
+
   static const _salt = '0ab3443b71834b33be675af744d76ef0aaa74cd2b60c4b67';
   static const _path = '/lite-earn/ting/welfare/';
 
@@ -40,17 +48,24 @@ class XmlyRewards {
     return credentials.uid;
   }
 
-  static Map<String, dynamic> _result(Map<String, dynamic> response) {
+  static Map<String, dynamic> _result(
+    Map<String, dynamic> response, {
+    bool mutation = false,
+  }) {
     AppLog.instance.trace("lib/api/xmly_rewards.dart::XmlyRewards._result");
 
     final data = response['data'];
     if (data is! Map<String, dynamic> || data['success'] is! bool) {
-      throw XmlyException('invalid_response', '福利响应缺少明确结果');
+      throw XmlyException(
+        mutation ? 'reward_result_unknown' : 'reward_task_invalid',
+        '福利响应缺少明确结果',
+        definitive: !mutation,
+      );
     }
     if (data['success'] != true) {
       throw XmlyException(
-        'reward_rejected',
-        '福利请求未成功，请在官方 App 检查',
+        mutation ? 'reward_rejected' : 'reward_task_rejected',
+        mutation ? '服务端未发放听时' : '听时任务查询未成功',
         definitive: true,
       );
     }
@@ -139,73 +154,133 @@ class XmlyRewards {
   Future<Map<String, dynamic>> _claim(Map<String, dynamic> value) async {
     AppLog.instance.trace("lib/api/xmly_rewards.dart::XmlyRewards._claim");
 
+    // The official client queries tasks, completes an ad/browse task, and only
+    // then sends the SDK callback fields. An empty payload is not a reward.
+    final taskData = (await tasks())['data'] as Map<String, dynamic>;
+    final tiers = taskData['tierList'];
+    if (taskData['showTask'] == false || (tiers is List && tiers.isEmpty)) {
+      throw const XmlyException(
+        'reward_unavailable',
+        '当前没有可领取的听时任务',
+        definitive: true,
+      );
+    }
+    if (tiers is! List ||
+        tiers.any((tier) {
+          AppLog.instance.trace(
+            'lib/api/xmly_rewards.dart::XmlyRewards._claim.closure#1',
+          );
+          return tier is! Map || !const [0, 1].contains(tier['status']);
+        })) {
+      throw const XmlyException(
+        'reward_task_invalid',
+        '暂时无法识别听时任务',
+        definitive: true,
+      );
+    }
+    if (tiers.every((tier) {
+      AppLog.instance.trace(
+        'lib/api/xmly_rewards.dart::XmlyRewards._claim.closure#2',
+      );
+      return tier['status'] == 1;
+    })) {
+      throw const XmlyException(
+        'reward_completed',
+        '今天的听时任务已完成',
+        definitive: true,
+      );
+    }
+    final hasCompletion = const ['adId', 'adResponseId', 'verifyStr'].any((
+      key,
+    ) {
+      AppLog.instance.trace(
+        'lib/api/xmly_rewards.dart::XmlyRewards._claim.closure#3',
+      );
+      return value[key] != null &&
+          value[key] != '' &&
+          value[key] != false &&
+          value[key] != 0;
+    });
+    if (!hasCompletion) {
+      throw const XmlyException(
+        'reward_task_required',
+        '请先完成官方广告或浏览任务',
+        definitive: true,
+      );
+    }
     final payload = _payload(value);
     client.invalidateQuota();
-    // Empty business fields are accepted by the original official protocol;
-    // generated identity/signature/ticket are still mandatory. Never replay POST.
-    final response = await client.request(
-      'POST',
-      XmlyClient.welfare,
-      '${_path}rewardDuration/ts-${payload['ts']}',
-      data: payload,
-    );
-    return {'data': _result(response)};
+    try {
+      // A mutation is sent once. Neither transient errors nor an unrecognized
+      // response authorize a retry or a second reward.
+      final response = await client.request(
+        'POST',
+        XmlyClient.welfare,
+        '${_path}rewardDuration/ts-${payload['ts']}',
+        data: payload,
+      );
+      return {'data': _result(response, mutation: true)};
+    } catch (error, stack) {
+      if (error is XmlyException && error.definitive) rethrow;
+      final failure = const XmlyException('reward_result_unknown', '领取请求结果未知');
+      AppLog.instance.linkError(failure, error);
+      AppLog.instance.write(
+        AppLogLevel.warning,
+        'rewards',
+        'Reward response unknown',
+        data: {'stage': 'claim_response'},
+        error: error,
+        stackTrace: stack,
+      );
+      Error.throwWithStackTrace(failure, stack);
+    }
   }
 
-  /// Automatic issuance is opt-in. Read-only quota/login/resolve never invoke it.
-  /// An error returns the last verified balance, and never retries that claim.
-  Future<Quota> refresh({bool Function()? shouldContinue}) {
-    AppLog.instance.trace("lib/api/xmly_rewards.dart::XmlyRewards.refresh");
-    return _lock.synchronized(() async {
-      AppLog.instance.trace(
-        "lib/api/xmly_rewards.dart::XmlyRewards.refresh.closure#1",
+  Future<Quota> claimAndRefresh(Map<String, dynamic> value) async {
+    AppLog.instance.trace(
+      'lib/api/xmly_rewards.dart::XmlyRewards.claimAndRefresh',
+    );
+    await claim(value);
+    try {
+      return await client.queryQuota();
+    } catch (error, stack) {
+      // The reward is confirmed even if the following read fails. Retrying
+      // this operation means querying the balance, never issuing again.
+      final failure = const XmlyException(
+        'reward_claimed_quota_failed',
+        '听时已领取，余额刷新失败',
+        definitive: true,
       );
+      AppLog.instance.linkError(failure, error);
+      AppLog.instance.write(
+        AppLogLevel.warning,
+        'rewards',
+        'Reward confirmed; balance refresh failed',
+        data: {'stage': 'quota_after_claim'},
+        error: error,
+        stackTrace: stack,
+      );
+      Error.throwWithStackTrace(failure, stack);
+    }
+  }
 
-      bool allowed() {
-        AppLog.instance.trace(
-          "lib/api/xmly_rewards.dart::XmlyRewards.refresh.closure#1.allowed",
-        );
-        return automaticEnabled && (shouldContinue?.call() ?? true);
-      }
-
-      var quota = await client.queryQuota();
-      lastError = '';
-      if (!allowed() || quota.remainingSeconds >= 7200) return quota;
-      final identity = client.cacheIdentity;
-      // ponytail: cap each explicit refresh at 64 successful claims; require a
-      // later refresh rather than letting a pathological 1-second reward loop run.
-      for (
-        var count = 0;
-        count < 64 && allowed() && quota.remainingSeconds < 14400;
-        count++
-      ) {
-        if (identity != client.cacheIdentity || !client.accountAvailable) break;
-        final previous = quota.remainingSeconds;
-        try {
-          final claimed = await client.withBalanceChange(() async {
-            AppLog.instance.trace(
-              "lib/api/xmly_rewards.dart::XmlyRewards.refresh.closure#1.closure#1",
-            );
-
-            // Consent may be revoked while a debit holds the balance lock.
-            if (!allowed() ||
-                identity != client.cacheIdentity ||
-                !client.accountAvailable)
-              return false;
-            await _claim({});
-            return true;
-          });
-          if (!claimed) break;
-          if (identity != client.cacheIdentity || !client.accountAvailable)
-            break;
-          quota = await client.queryQuota();
-        } on Exception {
-          lastError = '领取听时未完成，已停止自动领取';
-          break;
-        }
-        if (quota.remainingSeconds <= previous) break;
-      }
+  /// Legacy autoClaim preference now checks tasks/balance. The app has no ad
+  /// SDK completion callback, so it cannot promise automatic reward issuance.
+  Future<Quota> refresh({bool Function()? shouldContinue}) async {
+    AppLog.instance.trace('lib/api/xmly_rewards.dart::XmlyRewards.refresh');
+    lastError = '';
+    lastErrorCode = null;
+    final quota = await client.queryQuota();
+    if (!automaticEnabled ||
+        !(shouldContinue?.call() ?? true) ||
+        quota.remainingSeconds >= 7200)
       return quota;
-    });
+    try {
+      return await claimAndRefresh({});
+    } on XmlyException catch (error) {
+      lastErrorCode = error.code;
+      lastError = error.message;
+      return quota;
+    }
   }
 }

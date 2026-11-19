@@ -1,4 +1,5 @@
 import 'ios_platform.dart';
+
 import 'dart:async';
 import 'dart:io';
 
@@ -526,7 +527,9 @@ class AppRuntime extends ChangeNotifier {
     final settings = storage.state['settings'] as Map;
     final configured = (settings['download'] as Map?)?['rootDirectory'];
     if (configured is String && configured.isNotEmpty)
-      return absoluteFilePath(Platform.isIOS ? await IosPlatform.resolvePath(configured) : configured);
+      return absoluteFilePath(
+        Platform.isIOS ? await IosPlatform.resolvePath(configured) : configured,
+      );
     final parent = Platform.isAndroid
         ? await getExternalStorageDirectory() ??
               await getApplicationSupportDirectory()
@@ -696,10 +699,7 @@ class AppRuntime extends ChangeNotifier {
 
     if (!_automaticRewardsEnabled) return null;
     final record = (storage.state['accounts'] as Map)[identity] as Map?;
-    if (record == null ||
-        record['rewardPaused'] == true ||
-        ledger.isBlocked(identity))
-      return null;
+    if (record == null || ledger.isBlocked(identity)) return null;
     final checked = _rewardChecks[identity];
     if (checked != null &&
         DateTime.now().difference(checked.checkedAt) <
@@ -743,16 +743,25 @@ class AppRuntime extends ChangeNotifier {
         if (!allowed()) return null;
         final after = await rewards.refresh(shouldContinue: allowed);
         _rewardChecks[identity] = after;
+        await storage.transaction((state) {
+          AppLog.instance.trace(
+            'lib/services/app_runtime.dart::AppRuntime._refreshAccountRewards.closure#1.closure#1',
+          );
+          final record = (state['accounts'] as Map)[identity];
+          if (record is Map && record['credentialRef'] is String)
+            record['quota'] = after.toJson();
+        });
+        if (!closing && !_closed) notifyListeners();
         increase = after.remainingSeconds - before.remainingSeconds;
       } catch (error, stack) {
         _recordFailure('Refreshing account rewards failed', error, stack);
         // Claim availability must not prevent an otherwise authorized download.
         return null;
       }
-      if (rewards.lastError.isNotEmpty) {
+      if (rewards.needsReview) {
         await storage.transaction((state) {
           AppLog.instance.trace(
-            "lib/services/app_runtime.dart::AppRuntime._refreshAccountRewards.closure#1.closure#1",
+            "lib/services/app_runtime.dart::AppRuntime._refreshAccountRewards.closure#1.closure#2",
           );
 
           ((state['accounts'] as Map)[identity] as Map)['rewardPaused'] = true;
@@ -1048,8 +1057,6 @@ class AppRuntime extends ChangeNotifier {
       try {
         for (final identity in accounts.accountIds.toList()) {
           if (!allowed()) break;
-          final record = (storage.state['accounts'] as Map)[identity] as Map;
-          if (record['rewardPaused'] == true) continue;
           try {
             await accounts.runWithAccount(identity, (client) async {
               AppLog.instance.trace(

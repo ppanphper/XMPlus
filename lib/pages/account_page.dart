@@ -47,7 +47,13 @@ String _accountError(Object error) {
     'challenge_expired' || 'challenge_invalid' => '短信验证已过期或失效，请重新发送。',
     'network' || 'network_error' || 'http_error' => '连接失败或超时，请检查网络。短信不会自动重发。',
     'uncertain' => '请求结果未知，请先在官方 App 核对，不要重复领取。',
-    'reward_rejected' => '领取未成功，请在官方 App 检查。',
+    'reward_rejected' => '服务端未发放听时，请检查任务是否完成或今日次数已用完。',
+    'reward_task_required' => '请在喜马拉雅极速版完成广告或浏览任务，再回来查询听时。',
+    'reward_unavailable' => '当前没有可领取的听时任务。',
+    'reward_completed' => '今日听时任务已完成，请查询听时。',
+    'reward_task_invalid' || 'reward_task_rejected' => '暂时无法查询听时任务，请稍后重试。',
+    'reward_result_unknown' => '上次领取结果未确认，请先核对，避免重复领取。',
+    'reward_claimed_quota_failed' => '听时已领取，余额刷新失败。请点“查询听时”，无需重复领取。',
     'reward_paused' => '领取已暂停，请先在官方 App 核对，再选择恢复领取。',
     'unsettled' || 'usage_uncertain' => '听时暂时无法确认，正在自动核对，请稍后再试。',
     'integration_required' => '暂时无法安全切换账号，原账号已保留。',
@@ -491,51 +497,34 @@ class _AccountPageState extends State<AccountPage> {
     });
   }
 
-  Future<void> _claim(String identity, String uid) async {
+  Future<void> _claim(String identity) {
     AppLog.instance.trace(
-      "lib/pages/account_page.dart::_AccountPageState._claim",
+      'lib/pages/account_page.dart::_AccountPageState._claim',
     );
-
-    if (!await _confirm(
-          context,
-          '领取听时',
-          '为账号 $uid 发送一次领取请求？领取结果以官方 App 为准。',
-          action: '领取一次',
-        ) ||
-        !mounted)
-      return;
-    await _run(() async {
+    // With no official task-completion callback this is a read-only task check.
+    // It remains available for old paused records; it cannot replay a reward.
+    return _run(() async {
       AppLog.instance.trace(
-        "lib/pages/account_page.dart::_AccountPageState._claim.closure#1",
+        'lib/pages/account_page.dart::_AccountPageState._claim.closure#1',
       );
-
       try {
-        final quota = await widget.accounts.runWithAccount(identity, (
-          client,
-        ) async {
+        final quota = await widget.accounts.runWithAccount(identity, (client) {
           AppLog.instance.trace(
-            "lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#1",
+            'lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#1',
           );
-
-          final record = (widget.storage.state['accounts'] as Map)[identity];
-          if (record is Map && record['rewardPaused'] == true) {
-            throw const AccountException('reward_paused', '领取已暂停');
-          }
-          // Manual issuance is a single request, not the automatic refill loop.
-          await XmlyRewards(client).claim({});
-          return client.queryQuota();
+          return XmlyRewards(client).claimAndRefresh({});
         });
         await _storeQuota(identity, quota);
-      } catch (error, stack) {
-        _recordAccountError(error, stack);
-        await widget.storage.transaction((state) {
-          AppLog.instance.trace(
-            "lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#2",
-          );
-
-          final record = (state['accounts'] as Map)[identity];
-          if (record is Map) record['rewardPaused'] = true;
-        });
+      } on XmlyException catch (error) {
+        if (error.code == 'reward_result_unknown') {
+          await widget.storage.transaction((state) {
+            AppLog.instance.trace(
+              'lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#2',
+            );
+            final record = (state['accounts'] as Map)[identity];
+            if (record is Map) record['rewardPaused'] = true;
+          });
+        }
         rethrow;
       }
     });
@@ -549,7 +538,7 @@ class _AccountPageState extends State<AccountPage> {
     if (!await _confirm(
           context,
           '恢复领取',
-          '请先在官方 App 核对账号 $uid 上一次领取的结果。确认已核对，并允许之后重新领取？',
+          '请先在官方 App 核对账号 $uid 上一次领取的结果，确认后清除暂停记录。查询听时和任务不受影响。',
           action: '已核对，恢复',
         ) ||
         !mounted)
@@ -577,8 +566,8 @@ class _AccountPageState extends State<AccountPage> {
     if (value &&
         (!await _confirm(
               context,
-              '开启自动领取',
-              '对所有已登录账号生效：可用听时不足 2 小时时尝试领取至 4 小时。请求失败会暂停该账号的自动领取，需人工核对后恢复。',
+              '自动检查听时',
+              '定期查询所有已登录账号的听时与任务。广告或浏览任务需在喜马拉雅极速版完成。',
               action: '开启',
             ) ||
             !mounted))
@@ -755,7 +744,7 @@ class _AccountPageState extends State<AccountPage> {
               if (paused)
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
-                  child: Text('领取已暂停，请先在官方 App 核对上一次结果。'),
+                  child: Text('旧版领取暂停记录尚未解除，听时和任务查询不受影响。'),
                 ),
               const SizedBox(height: 8),
               Wrap(
@@ -803,15 +792,15 @@ class _AccountPageState extends State<AccountPage> {
                     child: const Text('查询听时'),
                   ),
                   OutlinedButton(
-                    onPressed: _busy || paused
+                    onPressed: _busy
                         ? null
                         : () {
                             AppLog.instance.trace(
                               "lib/pages/account_page.dart::_AccountPageState._account.closure#7",
                             );
-                            _claim(identity, uid);
+                            _claim(identity);
                           },
-                    child: const Text('领取一次'),
+                    child: const Text('检查领时任务'),
                   ),
                   if (paused)
                     OutlinedButton(
@@ -823,7 +812,7 @@ class _AccountPageState extends State<AccountPage> {
                               );
                               _resumeRewards(identity, uid);
                             },
-                      child: const Text('核对后恢复自动领取'),
+                      child: const Text('解除领取暂停'),
                     ),
                   TextButton(
                     onPressed: _busy
@@ -915,8 +904,8 @@ class _AccountPageState extends State<AccountPage> {
               const SizedBox(height: 16),
               Card(
                 child: SwitchListTile(
-                  title: const Text('自动领取听时'),
-                  subtitle: const Text('不足 2 小时补充至 4 小时，对所有账号生效。'),
+                  title: const Text('自动检查听时'),
+                  subtitle: const Text('定期查询听时；领取任务需在喜马拉雅极速版完成。'),
                   value: _autoClaim,
                   onChanged: _busy ? null : _toggleAuto,
                 ),

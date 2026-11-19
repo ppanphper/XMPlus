@@ -14,6 +14,7 @@ import 'account_service.dart';
 import 'app_log.dart';
 import 'audio_cache.dart';
 import 'audio_driver.dart';
+import 'ios_audio_stream.dart';
 import 'close_sequence.dart';
 import 'download_service.dart';
 import 'media_pipeline.dart';
@@ -565,8 +566,39 @@ class PlayerService {
       "lib/services/player_service.dart::PlayerService._message",
     );
 
+    if (failure is SocketException || failure is TimeoutException || failure is HttpException) {
+      return '音频连接失败，请检查网络后重试';
+    }
+    if (failure is FileSystemException) {
+      return '音频缓存读写失败，请检查可用存储空间';
+    }
     if (failure is XmlyException) {
       switch (failure.code) {
+        case 'audio_stream_unavailable':
+          return '音频初始化失败，请退出应用后重新打开';
+        case 'audio_output_failed':
+          return '无法启用音频输出，请检查音频设备后重试';
+        case 'audio_decode_failed':
+          return '音频无法读取，请重试或重新下载';
+        case 'network':
+        case 'network_error':
+          return '音频连接失败，请检查网络后重试';
+        case 'cache_source_changed':
+          return '音频来源已更新，请重新播放';
+        case 'cache_range':
+          return '音频缓存不完整，请重新播放';
+        case 'invalid_media':
+          return '未取得有效音频，请重新播放或更换音质';
+        case 'media_unauthorized':
+          return '音频授权已失效，请重新打开这集声音';
+        case 'permission_denied':
+        case 'unauthorized':
+        case 'purchase_required':
+        case 'vip_required':
+          return '当前账号暂无播放权限，请在官方 App 确认权益';
+        case 'login_expired':
+        case 'auth_required':
+          return '登录已失效，请重新登录后播放';
         case 'file_missing':
           return '音频文件已丢失，请重新下载';
         case 'usage_uncertain':
@@ -2168,6 +2200,30 @@ class PlayerService {
     }();
   }
 
+  Future<Uri> _mountCache(AudioCache cache, int request) async {
+    AppLog.instance.trace('lib/services/player_service.dart::PlayerService._mountCache');
+    if (Platform.isIOS) {
+      final uri = await IosAudioStream.instance.mount(cache);
+      if (_closed || request != _request) {
+        await IosAudioStream.instance.unmount(uri);
+        throw const DownloadStopped();
+      }
+      return uri;
+    }
+    final proxy = await _playbackProxy();
+    if (_closed || request != _request) throw const DownloadStopped();
+    return proxy.mount(cache);
+  }
+
+  Future<void> _unmountCache(AudioCache cache, Uri uri) async {
+    AppLog.instance.trace('lib/services/player_service.dart::PlayerService._unmountCache');
+    if (uri.scheme == IosAudioStream.scheme) {
+      await IosAudioStream.instance.unmount(uri);
+    } else {
+      await _proxy?.unmount(cache);
+    }
+  }
+
   Future<PlaybackSource> _prepare(
     Track track,
     bool save,
@@ -2246,10 +2302,9 @@ class PlayerService {
       },
     );
     try {
-      final proxy = await _playbackProxy();
-      if (_closed || request != _request) throw const DownloadStopped();
+      final uri = await _mountCache(cache, request);
       return PlaybackSource(
-        uri: proxy.mount(cache),
+        uri: uri,
         identity: identity,
         kind: 'online',
         requiresReward: reward,
@@ -2259,7 +2314,7 @@ class PlayerService {
             "lib/services/player_service.dart::PlayerService._prepare.closure#3",
           );
 
-          await proxy.unmount(cache);
+          await _unmountCache(cache, uri);
           await cache.close();
           final folder = Directory(directory);
           if (await folder.exists()) await folder.delete(recursive: true);
@@ -2391,12 +2446,11 @@ class PlayerService {
           throw const XmlyException('download_stopped', '下载尚未就绪，请检查任务');
         await Future<void>.delayed(const Duration(milliseconds: 25));
       }
-      final proxy = await _playbackProxy();
-      if (_closed || request != _request) throw const DownloadStopped();
-      final leased = retained!;
       final mounted = cache!;
+      final uri = await _mountCache(mounted, request);
+      final leased = retained!;
       final source = PlaybackSource(
-        uri: proxy.mount(mounted),
+        uri: uri,
         // The task may have rotated accounts while this request awaited a cache.
         identity: mounted.accountIdentity,
         kind: 'prepaid',
@@ -2407,7 +2461,7 @@ class PlayerService {
             "lib/services/player_service.dart::PlayerService._prepareDownload.closure#6",
           );
 
-          await proxy.unmount(mounted);
+          await _unmountCache(mounted, uri);
           await pipeline.releaseTask(leased);
         },
       );
@@ -2513,6 +2567,14 @@ class PlayerService {
         );
 
         if (request != _request) return;
+        if (error != null && _source != null && !_atEnd) {
+          await _openCurrent(
+            request,
+            resumePosition: position,
+            manualReplay: _manualChapterPosition,
+          );
+          return;
+        }
         if (_source == null || _atEnd) {
           final selectedPosition = _atEnd ? _endSeekPosition : null;
           await _openCurrent(

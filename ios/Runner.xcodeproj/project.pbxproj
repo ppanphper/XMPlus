@@ -17,6 +17,7 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		98E1C716C7E0BE4D3BC0E39F /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 76DF7C1DE7CD8E3A5ED31C37 /* Pods_Runner.framework */; };
 		DACC37BE715D29AD24725CA1 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 895A819F1F566F0AB9EE73B5 /* FlutterGeneratedPluginSwiftPackage */; };
+		B15F11AA7200000000000001 /* XMPlusAudioStream.m in Sources */ = {isa = PBXBuildFile; fileRef = B15F11AA7200000000000002 /* XMPlusAudioStream.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -55,6 +56,8 @@
 		AA0C28C8A0E0158306DB9DD9 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		CA7EA3C13DC49F4B0273DD61 /* IosPlatformBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = IosPlatformBridge.swift; sourceTree = "<group>"; };
 		E141935AE1399437A4465F47 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
+		B15F11AA7200000000000002 /* XMPlusAudioStream.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = XMPlusAudioStream.m; sourceTree = "<group>"; };
+		B15F11AA7200000000000003 /* XMPlusAudioStream.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = XMPlusAudioStream.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -143,6 +146,8 @@
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				CA7EA3C13DC49F4B0273DD61 /* IosPlatformBridge.swift */,
+				B15F11AA7200000000000002 /* XMPlusAudioStream.m */,
+				B15F11AA7200000000000003 /* XMPlusAudioStream.h */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -312,6 +317,7 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				78745194DB777AB1AC346E6B /* IosPlatformBridge.swift in Sources */,
+				B15F11AA7200000000000001 /* XMPlusAudioStream.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

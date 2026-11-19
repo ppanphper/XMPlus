@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:audio_session/audio_session.dart';
 import 'package:media_kit/media_kit.dart';
 
+import '../models/xmly_models.dart';
 import 'app_log.dart';
+import 'ios_audio_stream.dart';
 import 'close_sequence.dart';
 
 /// Device observations, not requested commands. Epoch rejects old-source events.
@@ -72,12 +74,18 @@ void requireLocalAudio(Uri uri) {
       !uri.hasQuery &&
       !uri.hasFragment)
     return;
+  if (Platform.isIOS && IosAudioStream.instance.contains(uri)) return;
   throw ArgumentError('播放器仅接受本机缓存或已下载文件');
 }
 
 /// Constructing this adapter never initializes media_kit or a sound device.
 class MediaKitAudioDriver implements AudioDriver {
   Player? _player;
+  int? _nativeHandle;
+  Uri? _sourceUri;
+  Object? _streamFailure;
+  StackTrace? _streamFailureStack;
+  bool _failureEmitted = false;
   final _events = StreamController<AudioSnapshot>.broadcast();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   int _epoch = 0;
@@ -113,6 +121,11 @@ class MediaKitAudioDriver implements AudioDriver {
 
       await _player?.dispose();
       _player = null;
+      final handle = _nativeHandle;
+      if (handle != null) {
+        await IosAudioStream.instance.detach(handle);
+        _nativeHandle = null;
+      }
     },
     () async {
       AppLog.instance.trace(
@@ -142,24 +155,33 @@ class MediaKitAudioDriver implements AudioDriver {
     bool failureRecorded = false,
   }) {
     AppLog.instance.trace(
-      "lib/services/audio_driver.dart::MediaKitAudioDriver._emit",
+      'lib/services/audio_driver.dart::MediaKitAudioDriver._emit',
     );
-
     final player = _player;
-    if (player == null || _opening || _closed) return;
+    if (player == null || _opening || _closed || _failureEmitted) return;
     final state = player.state;
+    final failed = _streamFailure != null;
+    // eof-reached may arrive before mpv's error log when output initialization
+    // fails. A known-duration source has not completed while still at its start.
+    final reachedEnd = state.duration > Duration.zero
+        ? state.position >= state.duration - const Duration(seconds: 1)
+        : state.position > Duration.zero;
+    // mpv can report end-of-file after a fatal output/read error. Deliver the
+    // fault once, then suppress source events until open creates a new epoch.
+    // In particular pause's own snapshot must not recursively report the error.
+    _failureEmitted = failed;
     _events.add(
       AudioSnapshot(
         epoch: _epoch,
-        playing: state.playing,
-        buffering: state.buffering,
-        completed: state.completed,
+        playing: !failed && state.playing,
+        buffering: !failed && state.buffering,
+        completed: !failed && state.completed && reachedEnd,
         position: state.position.inMicroseconds / 1000000,
         duration: state.duration.inMicroseconds / 1000000,
-        error: error,
-        failure: failure,
-        stackTrace: stackTrace,
-        failureRecorded: failureRecorded,
+        error: error ?? (failed ? '音频播放失败，请重试' : null),
+        failure: failure ?? _streamFailure,
+        stackTrace: stackTrace ?? _streamFailureStack,
+        failureRecorded: failureRecorded || failed,
       ),
     );
   }
@@ -217,21 +239,32 @@ class MediaKitAudioDriver implements AudioDriver {
       "lib/services/audio_driver.dart::MediaKitAudioDriver._streamError",
     );
 
+    if (_closed || error.toString().trim().isEmpty || _streamFailure != null)
+      return;
+    _cancelResume();
+    final outputFailure = error.toString().contains(
+      'open/initialize audio device',
+    );
+    _streamFailure =
+        IosAudioStream.instance.failure(_sourceUri) ??
+        (outputFailure
+            ? const XmlyException('audio_output_failed', '无法启用音频输出')
+            : const XmlyException('audio_decode_failed', '音频暂时无法播放'));
+    _streamFailureStack = stack;
     AppLog.instance.write(
       AppLogLevel.error,
       'audio',
       'Audio stream failed',
-      data: {'epoch': _epoch},
+      data: {
+        'epoch': _epoch,
+        'source': _sourceUri?.scheme,
+        'stage': outputFailure ? 'audio_output' : 'decoder',
+      },
       error: error,
       stackTrace: stack,
       promptUser: true,
     );
-    _emit(
-      error: '音频播放失败，请重试',
-      failure: error,
-      stackTrace: stack,
-      failureRecorded: true,
-    );
+    _emit();
   }
 
   Future<void> _perform(
@@ -301,7 +334,8 @@ class MediaKitAudioDriver implements AudioDriver {
       "lib/services/audio_driver.dart::MediaKitAudioDriver._run",
     );
 
-    if (!Platform.isAndroid && !Platform.isIOS) return _perform(operation, action, arguments);
+    if (!Platform.isAndroid && !Platform.isIOS)
+      return _perform(operation, action, arguments);
     final result = _commands.then((_) async {
       AppLog.instance.trace(
         "lib/services/audio_driver.dart::MediaKitAudioDriver._run.closure#1",
@@ -451,6 +485,12 @@ class MediaKitAudioDriver implements AudioDriver {
 
     final player = _player;
     if (player == null || !_canPlay(intent)) return;
+    final failure = _streamFailure;
+    if (failure != null)
+      Error.throwWithStackTrace(
+        failure,
+        _streamFailureStack ?? StackTrace.current,
+      );
     if (Platform.isAndroid || Platform.isIOS) {
       final session = await _audioSession();
       if (!_canPlay(intent)) return;
@@ -510,6 +550,16 @@ class MediaKitAudioDriver implements AudioDriver {
           await player.stop();
           await _releaseFocus();
           _epoch = epoch;
+          _streamFailure = null;
+          _streamFailureStack = null;
+          _failureEmitted = false;
+          _sourceUri = localUri;
+          if (localUri.scheme == IosAudioStream.scheme) {
+            IosAudioStream.instance.clearFailure(localUri);
+            final handle = await player.handle;
+            await IosAudioStream.instance.attach(handle);
+            _nativeHandle = handle;
+          }
           if (localUri.scheme == 'http') {
             // The local cache owns upstream timeouts/retries. mpv's default
             // five-second timeout must not abort buffering before it finishes.
@@ -520,13 +570,23 @@ class MediaKitAudioDriver implements AudioDriver {
           }
           // open completes before mpv finishes loading. Media.start is applied
           // by its load hook; an immediate standalone seek can be lost.
-          await player.open(
-            Media(
-              resource,
-              start: Duration(microseconds: (startPosition * 1000000).round()),
-            ),
-            play: false,
+          final media = Media(
+            resource,
+            start: Duration(microseconds: (startPosition * 1000000).round()),
           );
+          if (localUri.scheme == IosAudioStream.scheme) {
+            // media_kit.open loads a temporary playlist; mpv deliberately rejects
+            // custom protocols from playlists. add uses direct loadfile and
+            // retains Media.start hooks, without enabling unsafe playlists.
+            await player.open(Playlist(const []), play: false);
+            await player.add(media);
+            await (player.platform as NativePlayer).setProperty(
+              'playlist-pos',
+              '0',
+            );
+          } else {
+            await player.open(media, play: false);
+          }
           await player.setPitch(1.0);
         } finally {
           _opening = false;
