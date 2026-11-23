@@ -1,4 +1,5 @@
 import 'file_paths.dart';
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,6 +9,7 @@ import 'package:synchronized/synchronized.dart';
 import 'package:uuid/uuid.dart';
 
 import '../api/xmly_client.dart';
+import '../api/xmly_browse_reward.dart';
 import '../api/xmly_login.dart';
 import '../models/download_task.dart';
 import '../models/xmly_models.dart';
@@ -85,6 +87,74 @@ class AccountService {
       "lib/services/account_service.dart::AccountService._urlCacheDirectory.get",
     );
     return p.join(storage.directory, 'audio-url-cache');
+  }
+
+  String _officialDeviceKey(String identity) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService._officialDeviceKey',
+    );
+    return '$_prefix$identity.official-device';
+  }
+
+  Future<String?> officialDeviceId(String identity) async {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.officialDeviceId',
+    );
+    clientFor(identity);
+    return secrets.read(_officialDeviceKey(identity));
+  }
+
+  Future<void> setOfficialDeviceId(String identity, String deviceId) async {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.setOfficialDeviceId',
+    );
+    clientFor(identity);
+    final value = deviceId.trim();
+    if (value.isEmpty) {
+      await secrets.delete(_officialDeviceKey(identity));
+    } else {
+      await secrets.write(_officialDeviceKey(identity), value);
+    }
+  }
+
+  Future<OfficialListeningBalance?> claimOfficialRewards(
+    String identity, {
+    bool Function()? shouldContinue,
+  }) async {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.claimOfficialRewards',
+    );
+    final deviceId = await officialDeviceId(identity);
+    if (deviceId == null || deviceId.isEmpty) {
+      throw const XmlyException(
+        'reward_device_invalid',
+        '请设置正式版设备 ID',
+        definitive: true,
+      );
+    }
+    final original = clientFor(identity).credentials!;
+    final rewardClient = XmlyClient(
+      credentials: Credentials(token: original.token, deviceId: deviceId),
+    );
+    final rewards = XmlyBrowseReward(rewardClient);
+    try {
+      return await rewardClient.withBalanceChange(() async {
+        AppLog.instance.trace(
+          'lib/services/account_service.dart::AccountService.claimOfficialRewards.closure#1',
+        );
+        for (var step = 0; step < 5; step++) {
+          if (shouldContinue?.call() == false) return null;
+          final offer = await rewards.load();
+          await Future<void>.delayed(offer.stay);
+          if (shouldContinue?.call() == false) return null;
+          final balance = await rewards.claim(offer);
+          if (offer.fields['rewardDurType'] == 22) return balance;
+        }
+        throw const XmlyException('reward_task_invalid', '听时任务结果待更新');
+      });
+    } finally {
+      rewardClient.close();
+    }
   }
 
   bool get admissionPaused {
@@ -974,6 +1044,7 @@ class AccountService {
             final oldRef = account.remove('credentialRef') as String;
             account['archived'] = true;
             _scheduleCleanup(state, oldRef);
+            _scheduleCleanup(state, _officialDeviceKey(identity));
             final remaining = accounts.keys.where((id) {
               AppLog.instance.trace(
                 "lib/services/account_service.dart::AccountService.remove.closure#1.closure#1.closure#1.closure#1",

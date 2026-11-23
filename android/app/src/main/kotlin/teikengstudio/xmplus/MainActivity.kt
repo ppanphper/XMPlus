@@ -1,6 +1,7 @@
 package teikengstudio.xmplus
 
 import android.net.Uri
+import android.webkit.WebSettings
 import android.provider.Settings
 import android.provider.DocumentsContract
 import android.content.ClipData
@@ -44,6 +45,7 @@ class MainActivity : AudioServiceActivity() {
             .setMethodCallHandler { call, result ->
                 try {
                     when (call.method) {
+                        "rewardUserAgent" -> result.success(WebSettings.getDefaultUserAgent(this))
                         "mediaToolPaths" -> {
                             val directory = File(applicationInfo.nativeLibraryDir).canonicalFile
                             val paths = mutableMapOf("directory" to directory.path)

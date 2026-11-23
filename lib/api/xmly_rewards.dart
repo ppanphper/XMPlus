@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Port of xmly/rewards.py. No advertisement completion fields are fabricated.
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:crypto/crypto.dart';
 import 'package:synchronized/synchronized.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/xmly_models.dart';
+import '../services/android_platform.dart';
 import 'xmly_client.dart';
 import 'xmly_crypto.dart';
 import "../services/app_log.dart";
@@ -65,7 +66,7 @@ class XmlyRewards {
     if (data['success'] != true) {
       throw XmlyException(
         mutation ? 'reward_rejected' : 'reward_task_rejected',
-        mutation ? '服务端未发放听时' : '听时任务查询未成功',
+        '${data['msg'] ?? data['toast'] ?? data['code'] ?? (mutation ? '服务端未发放听时' : '听时任务查询未成功')}',
         definitive: true,
       );
     }
@@ -132,6 +133,7 @@ class XmlyRewards {
       'ticket': XmlyCrypto.freshTicket(
         client.credentials!,
         attributes: 'b=lite&s=lite_time_reward&u=$uid',
+        liteAppVersion: '3.5.15.3',
       ),
     };
   }
@@ -264,19 +266,90 @@ class XmlyRewards {
     }
   }
 
-  /// Legacy autoClaim preference now checks tasks/balance. The app has no ad
-  /// SDK completion callback, so it cannot promise automatic reward issuance.
+  Future<Map<String, dynamic>> _advertisement() async {
+    AppLog.instance.trace(
+      'lib/api/xmly_rewards.dart::XmlyRewards._advertisement',
+    );
+    final quota = await client.queryQuota();
+    final account = client.credentials!;
+    final response = await client.request(
+      'POST',
+      XmlyClient.advertising,
+      '/subapp/common',
+      data: {
+        'userAgent': await AndroidPlatform.rewardUserAgent(),
+        'version': '3.5.15',
+        'network': 'wifi',
+        'localDuration': '${quota.remainingSeconds}',
+        'uid': account.uid,
+        'adxdevice': account.deviceId,
+        'appid': '1463',
+        'name': 'sub_freetime_inspire_video',
+        'extInfo': '{"sourceName":"VIP_DURATION"}',
+        'xt': '${_clock().millisecondsSinceEpoch}',
+        'device': 'android',
+      },
+    );
+    final ads = response['data'];
+    final ad = ads is List
+        ? ads.map(xmlyMap).where((item) {
+            AppLog.instance.trace(
+              'lib/api/xmly_rewards.dart::XmlyRewards._advertisement.closure#1',
+            );
+            return item['adtype'] == 10026;
+          }).firstOrNull
+        : null;
+    final adId = ad?['adid'];
+    final responseId = response['responseId'];
+    if (adId == null || responseId == null) {
+      throw const XmlyException('reward_ad_unavailable', '当前暂无极速版领时广告');
+    }
+    return {
+      'adId': adId,
+      'adResponseId': responseId,
+      'isUnisdk': false,
+      'isSecondPhaseCompleted': false,
+    };
+  }
+
+  Future<Quota> claimAvailable({bool Function()? shouldContinue}) async {
+    AppLog.instance.trace(
+      'lib/api/xmly_rewards.dart::XmlyRewards.claimAvailable',
+    );
+    while (shouldContinue?.call() ?? true) {
+      final data = (await tasks())['data'] as Map<String, dynamic>;
+      final tiers = data['tierList'];
+      if (data['showTask'] == false || tiers is! List || tiers.isEmpty) {
+        throw const XmlyException('reward_unavailable', '当前暂无极速版领时任务');
+      }
+      if (tiers.every((tier) {
+        AppLog.instance.trace(
+          'lib/api/xmly_rewards.dart::XmlyRewards.claimAvailable.closure#1',
+        );
+        return tier is Map && tier['status'] == 1;
+      })) {
+        return client.queryQuota();
+      }
+      final advertisement = await _advertisement();
+      await Future<void>.delayed(const Duration(seconds: 35));
+      if (shouldContinue?.call() == false) break;
+      await claimAndRefresh(advertisement);
+    }
+    return client.queryQuota();
+  }
+
   Future<Quota> refresh({bool Function()? shouldContinue}) async {
     AppLog.instance.trace('lib/api/xmly_rewards.dart::XmlyRewards.refresh');
     lastError = '';
     lastErrorCode = null;
     final quota = await client.queryQuota();
-    if (!automaticEnabled ||
-        !(shouldContinue?.call() ?? true) ||
-        quota.remainingSeconds >= 7200)
-      return quota;
+    if (!automaticEnabled || !(shouldContinue?.call() ?? true)) return quota;
     try {
-      return await claimAndRefresh({});
+      if (!Platform.isAndroid) {
+        await tasks();
+        return quota;
+      }
+      return await claimAvailable(shouldContinue: shouldContinue);
     } on XmlyException catch (error) {
       lastErrorCode = error.code;
       lastError = error.message;

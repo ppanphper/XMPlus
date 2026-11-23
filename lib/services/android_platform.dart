@@ -181,6 +181,13 @@ class AndroidPlatform {
     });
   }
 
+  static Future<String> rewardUserAgent() async {
+    AppLog.instance.trace(
+      'lib/services/android_platform.dart::AndroidPlatform.rewardUserAgent',
+    );
+    return (await _invoke<String>('rewardUserAgent'))!;
+  }
+
   static Future<Map<String, String>> mediaToolPaths() {
     AppLog.instance.trace(
       "lib/services/android_platform.dart::AndroidPlatform.mediaToolPaths",

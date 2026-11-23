@@ -1066,6 +1066,26 @@ class AppRuntime extends ChangeNotifier {
               if (!allowed()) return;
               await _refreshAccountRewards(identity, client);
             });
+            if (Platform.isAndroid && allowed()) {
+              final deviceId = await accounts.officialDeviceId(identity);
+              if (deviceId != null && deviceId.isNotEmpty) {
+                try {
+                  await accounts.claimOfficialRewards(
+                    identity,
+                    shouldContinue: allowed,
+                  );
+                } catch (error, stack) {
+                  if (error is! XmlyException ||
+                      error.code != 'reward_completed') {
+                    _recordFailure(
+                      'Claiming official listening rewards failed',
+                      error,
+                      stack,
+                    );
+                  }
+                }
+              }
+            }
           } catch (error, stack) {
             _recordFailure('Refreshing account rewards failed', error, stack);
             // A failed account refresh never triggers account rotation or replay.

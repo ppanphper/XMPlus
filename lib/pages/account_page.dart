@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +11,7 @@ import '../api/xmly_login.dart';
 import '../common/widgets/adaptive_text.dart';
 import '../common/widgets/confirmation_dialog.dart';
 import '../common/widgets/logged_network_image.dart';
+import '../api/xmly_browse_reward.dart';
 import '../api/xmly_rewards.dart';
 import '../models/xmly_models.dart';
 import '../services/account_service.dart';
@@ -47,9 +49,12 @@ String _accountError(Object error) {
     'challenge_expired' || 'challenge_invalid' => '短信验证已过期或失效，请重新发送。',
     'network' || 'network_error' || 'http_error' => '连接失败或超时，请检查网络。短信不会自动重发。',
     'uncertain' => '请求结果未知，请先在官方 App 核对，不要重复领取。',
-    'reward_rejected' => '服务端未发放听时，请检查任务是否完成或今日次数已用完。',
-    'reward_task_required' => '请在喜马拉雅极速版完成广告或浏览任务，再回来查询听时。',
-    'reward_unavailable' => '当前没有可领取的听时任务。',
+    'reward_rejected' => '领时服务暂未接受请求，请稍后重试。',
+    'reward_task_required' => '请先完成浏览任务。',
+    'reward_ad_unavailable' => '当前暂无可展示的广告，请稍后重试。',
+    'reward_unavailable' => '正式版当前未提供浏览领时入口。',
+    'reward_response_invalid' => '领时服务返回异常，请稍后重试。',
+    'reward_device_invalid' => '请先设置正式版设备 ID。',
     'reward_completed' => '今日听时任务已完成，请查询听时。',
     'reward_task_invalid' || 'reward_task_rejected' => '暂时无法查询听时任务，请稍后重试。',
     'reward_result_unknown' => '上次领取结果未确认，请先核对，避免重复领取。',
@@ -172,6 +177,7 @@ class _AccountPageState extends State<AccountPage> {
   bool _busy = false;
   String? _error;
   late String _viewKey;
+  final _officialBalances = <String, OfficialListeningBalance>{};
   final _profiles = <String, PublicProfile>{};
   final _profileClients = <String, XmlyClient>{};
   final _profileRequests = <String, XmlyClient>{};
@@ -501,31 +507,143 @@ class _AccountPageState extends State<AccountPage> {
     AppLog.instance.trace(
       'lib/pages/account_page.dart::_AccountPageState._claim',
     );
-    // With no official task-completion callback this is a read-only task check.
-    // It remains available for old paused records; it cannot replay a reward.
     return _run(() async {
       AppLog.instance.trace(
         'lib/pages/account_page.dart::_AccountPageState._claim.closure#1',
       );
-      try {
-        final quota = await widget.accounts.runWithAccount(identity, (client) {
-          AppLog.instance.trace(
-            'lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#1',
-          );
-          return XmlyRewards(client).claimAndRefresh({});
-        });
-        await _storeQuota(identity, quota);
-      } on XmlyException catch (error) {
-        if (error.code == 'reward_result_unknown') {
-          await widget.storage.transaction((state) {
-            AppLog.instance.trace(
-              'lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#2',
-            );
-            final record = (state['accounts'] as Map)[identity];
-            if (record is Map) record['rewardPaused'] = true;
-          });
+      if (Platform.isAndroid) {
+        OfficialListeningBalance? balance;
+        try {
+          balance = await widget.accounts.claimOfficialRewards(identity);
+        } on XmlyException catch (error) {
+          if (error.code != 'reward_completed') rethrow;
+          if (mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text('今日正式版听时已领取')));
+          }
+          return;
         }
-        rethrow;
+        if (balance == null) return;
+        _officialBalances[identity] = balance;
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              balance.allDay
+                  ? '已领取全天畅听'
+                  : '已领取 ${balance.addedSeconds ~/ 60} 分钟听时',
+            ),
+          ),
+        );
+      } else {
+        try {
+          final quota = await widget.accounts.runWithAccount(identity, (
+            client,
+          ) {
+            AppLog.instance.trace(
+              'lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#1',
+            );
+            return XmlyRewards(client).claimAndRefresh({});
+          });
+          await _storeQuota(identity, quota);
+        } on XmlyException catch (error) {
+          if (error.code == 'reward_result_unknown') {
+            await widget.storage.transaction((state) {
+              AppLog.instance.trace(
+                'lib/pages/account_page.dart::_AccountPageState._claim.closure#1.closure#2',
+              );
+              final record = (state['accounts'] as Map)[identity];
+              if (record is Map) record['rewardPaused'] = true;
+            });
+          }
+          rethrow;
+        }
+      }
+    });
+  }
+
+  Future<void> _claimLite(String identity) {
+    AppLog.instance.trace(
+      'lib/pages/account_page.dart::_AccountPageState._claimLite',
+    );
+    return _run(() async {
+      AppLog.instance.trace(
+        'lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1',
+      );
+      final quota = await widget.accounts.runWithAccount(identity, (client) {
+        AppLog.instance.trace(
+          'lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1.closure#1',
+        );
+        return XmlyRewards(client).claimAvailable();
+      });
+      await _storeQuota(identity, quota);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('极速版听时已领取')));
+    });
+  }
+
+  Future<void> _setOfficialDevice(String identity) async {
+    AppLog.instance.trace(
+      'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice',
+    );
+    final current = await widget.accounts.officialDeviceId(identity);
+    if (!mounted) return;
+    var deviceId = current ?? '';
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        AppLog.instance.trace(
+          'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice.closure#1',
+        );
+        return AlertDialog(
+          title: const Text('正式版设备'),
+          content: TextFormField(
+            initialValue: deviceId,
+            onChanged: (value) {
+              AppLog.instance.trace(
+                'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice.closure#1.closure#1',
+              );
+              deviceId = value;
+            },
+            autofocus: true,
+            decoration: const InputDecoration(labelText: '设备 ID'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                AppLog.instance.trace(
+                  'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice.closure#1.closure#2',
+                );
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                AppLog.instance.trace(
+                  'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice.closure#1.closure#3',
+                );
+                Navigator.pop(dialogContext, deviceId);
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+    if (value == null) return;
+    await _run(() async {
+      AppLog.instance.trace(
+        'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice.closure#2',
+      );
+      await widget.accounts.setOfficialDeviceId(identity, value);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(value.trim().isEmpty ? '正式版设备已清除' : '正式版设备已保存'),
+          ),
+        );
       }
     });
   }
@@ -566,8 +684,8 @@ class _AccountPageState extends State<AccountPage> {
     if (value &&
         (!await _confirm(
               context,
-              '自动检查听时',
-              '定期查询所有已登录账号的听时与任务。广告或浏览任务需在喜马拉雅极速版完成。',
+              Platform.isAndroid ? '自动领取听时' : '自动检查听时',
+              Platform.isAndroid ? '定期领取正式版和极速版听时。' : '定期查询极速版听时与任务。',
               action: '开启',
             ) ||
             !mounted))
@@ -644,6 +762,7 @@ class _AccountPageState extends State<AccountPage> {
         promptUser: false,
       );
     }
+    final officialBalance = _officialBalances[identity];
     final remaining = verified?.remainingSeconds;
     final checked = verified?.checkedAt.toLocal();
     final avatar = _profiles[identity]?.avatarUrl;
@@ -733,13 +852,21 @@ class _AccountPageState extends State<AccountPage> {
             ] else ...[
               Text(
                 remaining == null
-                    ? '可用听时：未核验'
-                    : '可用听时：${remaining ~/ 3600} 小时 ${(remaining % 3600) ~/ 60} 分 ${remaining % 60} 秒',
+                    ? '极速版听时：未核验'
+                    : '极速版听时：${remaining ~/ 3600} 小时 ${(remaining % 3600) ~/ 60} 分 ${remaining % 60} 秒',
               ),
               if (checked != null)
                 AdaptiveText(
                   '核验于 ${checked.toString().split('.').first}',
                   style: Theme.of(context).textTheme.bodySmall,
+                ),
+              if (Platform.isAndroid)
+                Text(
+                  officialBalance == null
+                      ? '正式版听时：待查询'
+                      : officialBalance.allDay
+                      ? '正式版听时：全天畅听'
+                      : '正式版听时：${officialBalance.seconds ~/ 3600} 小时 ${(officialBalance.seconds % 3600) ~/ 60} 分 ${officialBalance.seconds % 60} 秒',
                 ),
               if (paused)
                 const Padding(
@@ -800,15 +927,39 @@ class _AccountPageState extends State<AccountPage> {
                             );
                             _claim(identity);
                           },
-                    child: const Text('检查领时任务'),
+                    child: Text(Platform.isAndroid ? '领取正式版听时' : '检查领时任务'),
                   ),
+                  if (Platform.isAndroid)
+                    OutlinedButton(
+                      onPressed: _busy
+                          ? null
+                          : () {
+                              AppLog.instance.trace(
+                                'lib/pages/account_page.dart::_AccountPageState._account.closure#8',
+                              );
+                              _claimLite(identity);
+                            },
+                      child: const Text('领取极速版听时'),
+                    ),
+                  if (Platform.isAndroid)
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () {
+                              AppLog.instance.trace(
+                                'lib/pages/account_page.dart::_AccountPageState._account.closure#9',
+                              );
+                              _setOfficialDevice(identity);
+                            },
+                      child: const Text('正式版设备'),
+                    ),
                   if (paused)
                     OutlinedButton(
                       onPressed: _busy
                           ? null
                           : () {
                               AppLog.instance.trace(
-                                "lib/pages/account_page.dart::_AccountPageState._account.closure#8",
+                                "lib/pages/account_page.dart::_AccountPageState._account.closure#10",
                               );
                               _resumeRewards(identity, uid);
                             },
@@ -819,7 +970,7 @@ class _AccountPageState extends State<AccountPage> {
                         ? null
                         : () {
                             AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#9",
+                              "lib/pages/account_page.dart::_AccountPageState._account.closure#11",
                             );
                             _remove(identity, uid);
                           },
@@ -904,8 +1055,10 @@ class _AccountPageState extends State<AccountPage> {
               const SizedBox(height: 16),
               Card(
                 child: SwitchListTile(
-                  title: const Text('自动检查听时'),
-                  subtitle: const Text('定期查询听时；领取任务需在喜马拉雅极速版完成。'),
+                  title: Text(Platform.isAndroid ? '自动领取听时' : '自动检查听时'),
+                  subtitle: Text(
+                    Platform.isAndroid ? '定期领取正式版和极速版听时。' : '定期查询极速版听时与任务。',
+                  ),
                   value: _autoClaim,
                   onChanged: _busy ? null : _toggleAuto,
                 ),

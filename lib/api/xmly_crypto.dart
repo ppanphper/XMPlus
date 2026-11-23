@@ -203,12 +203,45 @@ class XmlyCrypto {
         .toString();
   }
 
-  static String freshTicket(Credentials credentials, {String? attributes}) {
+  static List<int> _mainTicketIdentity(String deviceId) {
+    AppLog.instance.trace(
+      'lib/api/xmly_crypto.dart::XmlyCrypto._mainTicketIdentity',
+    );
+    // Native xuidcc_parse_xuid supplies the original 16-byte device UUID.
+    switch (deviceId.length) {
+      case 16:
+        return utf8.encode(deviceId);
+      case 32:
+        return _hex(deviceId);
+      case 35:
+        return base64Url
+            .decode(base64Url.normalize(deviceId.substring(3)))
+            .sublist(0, 16);
+      case 36:
+        return _hex(deviceId.replaceAll('-', ''));
+      default:
+        throw const XmlyException(
+          'reward_device_invalid',
+          '请导入正式版账号的原设备 ID 后重试',
+        );
+    }
+  }
+
+  static String freshTicket(
+    Credentials credentials, {
+    String? attributes,
+    bool mainApp = false,
+    String liteAppVersion = '3.4.10.3',
+  }) {
     AppLog.instance.trace("lib/api/xmly_crypto.dart::XmlyCrypto.freshTicket");
 
-    final identity = md5
-        .convert(utf8.encode('${credentials.uid}|${credentials.deviceId}'))
-        .bytes;
+    final identity = mainApp
+        ? _mainTicketIdentity(credentials.deviceId)
+        : md5
+              .convert(
+                utf8.encode('${credentials.uid}|${credentials.deviceId}'),
+              )
+              .bytes;
     final random = Random.secure();
     final uuid = List<int>.generate(16, (_) {
       AppLog.instance.trace(
@@ -228,7 +261,9 @@ class XmlyCrypto {
       for (var i = 0; i < 16; i++) uuid[i] ^ identity[i],
     ];
     final suffix = utf8.encode(
-      'com.ximalaya.ting.lite!1.3.24!3.4.10.3!${attributes ?? 'b=lite&s=lite_track_play_url&&u=${credentials.uid}'}',
+      mainApp
+          ? 'com.ximalaya.ting.android!1.3.27!9.5.31.3!$attributes'
+          : 'com.ximalaya.ting.lite!1.3.24!$liteAppVersion!${attributes ?? 'b=lite&s=lite_track_play_url&&u=${credentials.uid}'}',
     );
     final digest = sha256.convert([
       ...payload,

@@ -25,6 +25,8 @@ class XmlyClient {
   static const hotWordsOrigin = 'https://search.ximalaya.com';
   static const collector = 'https://xdcs-collector.ximalaya.com';
   static const welfare = 'https://m.ximalaya.com';
+  static const advertising = 'https://adse.ximalaya.com';
+  static const mainAppVersion = '9.5.31.3';
   static const paidOrigin = 'https://mpaywsa.ximalaya.com';
   static const _maxResponse = 2 * 1024 * 1024;
   static const _qualities = ['m4a_128', 'm4a_64', 'mp3_64', 'mp3_32', 'm4a_24'];
@@ -178,6 +180,20 @@ class XmlyClient {
   static bool _endpoint(String method, String origin, String path) {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._endpoint");
 
+    if (origin == advertising) {
+      return (method == 'POST' && path == '/subapp/common') ||
+          (method == 'POST' && path == '/adx/ad') ||
+          (method == 'POST' && path == '/adx/init') ||
+          (method == 'GET' &&
+              RegExp(r'^/ting/incentive/ts-[0-9]+$').hasMatch(path)) ||
+          (method == 'GET' &&
+              RegExp(
+                r'^/incentive/ting/(?:durationConfig|currentDuration|recAlbumInfo)/ts-[0-9]+$',
+              ).hasMatch(path)) ||
+          (method == 'POST' &&
+              RegExp(r'^/incentive/ting/rewardDuration/ts-[0-9]+$')
+                  .hasMatch(path));
+    }
     if (origin == cachedAlbumOrigin)
       return method == 'GET' && path == '/nyx/v1/history/query/android';
     if (origin == paidOrigin)
@@ -232,6 +248,7 @@ class XmlyClient {
     if (origin != mobile) return false;
     if (method == 'POST')
       return const [
+            '/mobile-album/album/replaceConfig',
             '/fmobile-track/fmobile/track/v2/baseInfo',
             '/lite-mobile/audi/func/v1/config',
             '/lite-mobile/audi/func/v1/report',
@@ -665,11 +682,24 @@ class XmlyClient {
       'response_too_large',
       '响应超过 ${responseLimit ~/ (1024 * 1024)} MiB 上限',
     );
+    final mainListening =
+        (origin == advertising && path != '/subapp/common') ||
+        (origin == mobile && path == '/mobile-album/album/replaceConfig');
+    final liteListening =
+        (origin == advertising && path == '/subapp/common') ||
+        (origin == welfare && path.startsWith('/lite-earn/ting/welfare/'));
     final headers = <String, String>{
       'Accept': origin == collector ? '*/*' : 'application/json',
       if (origin == collector || _albumOverviewEndpoint(method, origin, path))
         'User-Agent': 'ting_3.4.10.3(Android,30)',
-      if (authenticated) 'Cookie': credentials!.cookie,
+      if (mainListening) 'User-Agent': 'ting_$mainAppVersion(Android,30)',
+      if (liteListening) 'User-Agent': 'ting_3.5.15.3(Android,29)',
+      if (authenticated)
+        'Cookie': mainListening
+            ? '1&_token=${credentials!.token}; 1&_device=android&${credentials!.deviceId}&$mainAppVersion; impl=com.ximalaya.ting.android; appid=0; osversion=29; sdkJarVersion=12044; sdkJarChannel=ximalaya_main_app_no_shell'
+            : liteListening
+            ? '1&_token=${credentials!.token}; 1&_device=android&${credentials!.deviceId}&3.5.15.3; channel=and-f5; impl=com.ximalaya.ting.lite; appid=1463'
+            : credentials!.cookie,
       if (authenticated && origin == searchOrigin) ...{
         'Origin': searchOrigin,
         'Referer': '$searchOrigin/',
@@ -893,6 +923,13 @@ class XmlyClient {
               '未获得本次请求的完整权限，请检查账号、听时和版权限制',
               definitive: true,
             );
+          if (mainListening) {
+            throw XmlyException(
+              'reward_rejected',
+              '${payload['msg'] ?? payload['message'] ?? '领时请求未成功'}',
+              definitive: true,
+            );
+          }
           throw const XmlyException('rejected', '喜马拉雅拒绝了请求', definitive: true);
         } on XmlyException catch (error, stack) {
           if (origin != paidOrigin ||
