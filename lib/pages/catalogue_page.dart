@@ -31,13 +31,21 @@ import 'media_settings_page.dart';
 import 'playback_settings_page.dart';
 import 'album_reviews_page.dart';
 
-Color _detailAccent(BuildContext context) => Platform.isAndroid
-    ? Theme.of(context).colorScheme.primary
-    : const Color(0xffff414a);
+Color _detailAccent(BuildContext context) {
+  AppLog.instance.trace("lib/pages/catalogue_page.dart::_detailAccent");
+  return Platform.isAndroid
+      ? Theme.of(context).colorScheme.primary
+      : const Color(0xffff414a);
+}
 
-Color _detailSelectedSurface(BuildContext context) => Platform.isAndroid
-    ? Theme.of(context).colorScheme.primaryContainer
-    : const Color(0xffffeeee);
+Color _detailSelectedSurface(BuildContext context) {
+  AppLog.instance.trace(
+    "lib/pages/catalogue_page.dart::_detailSelectedSurface",
+  );
+  return Platform.isAndroid
+      ? Theme.of(context).colorScheme.primaryContainer
+      : const Color(0xffffeeee);
+}
 
 void _recordCatalogueError(
   String operation,

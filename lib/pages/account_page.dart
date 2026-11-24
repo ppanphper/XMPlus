@@ -889,7 +889,12 @@ class _AccountPageState extends State<AccountPage> {
               FilledButton(
                 onPressed: _busy
                     ? null
-                    : () => _openImport(recoveryIdentity: identity),
+                    : () {
+                        AppLog.instance.trace(
+                          'lib/pages/account_page.dart::_AccountPageState._account.closure#4',
+                        );
+                        _openImport(recoveryIdentity: identity);
+                      },
                 child: const Text('恢复登录'),
               ),
             ] else ...[
@@ -983,14 +988,28 @@ class _AccountPageState extends State<AccountPage> {
                   children: [
                     Expanded(
                       child: FilledButton(
-                        onPressed: _busy ? null : () => _claim(identity),
+                        onPressed: _busy
+                            ? null
+                            : () {
+                                AppLog.instance.trace(
+                                  'lib/pages/account_page.dart::_AccountPageState._account.closure#5',
+                                );
+                                _claim(identity);
+                              },
                         child: const Text('正式版领取'),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: OutlinedButton(
-                        onPressed: _busy ? null : () => _claimLite(identity),
+                        onPressed: _busy
+                            ? null
+                            : () {
+                                AppLog.instance.trace(
+                                  'lib/pages/account_page.dart::_AccountPageState._account.closure#6',
+                                );
+                                _claimLite(identity);
+                              },
                         child: const Text('极速版领取'),
                       ),
                     ),
@@ -998,7 +1017,14 @@ class _AccountPageState extends State<AccountPage> {
                 )
               else
                 FilledButton(
-                  onPressed: _busy ? null : () => _claim(identity),
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          AppLog.instance.trace(
+                            'lib/pages/account_page.dart::_AccountPageState._account.closure#7',
+                          );
+                          _claim(identity);
+                        },
                   child: const Text('检查领时任务'),
                 ),
             ],

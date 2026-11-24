@@ -205,7 +205,12 @@ class _SettingsPageState extends State<SettingsPage> {
                         Icons.chevron_right_rounded,
                         size: 20,
                       ),
-                      onTap: () => _open(item.section, item.title, false),
+                      onTap: () {
+                        AppLog.instance.trace(
+                          "lib/pages/settings_page.dart::_SettingsPageState._list.closure#1",
+                        );
+                        _open(item.section, item.title, false);
+                      },
                     ),
                   ],
                 ],
@@ -232,7 +237,7 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing: !wide ? const Icon(Icons.chevron_right) : null,
             onTap: () {
               AppLog.instance.trace(
-                "lib/pages/settings_page.dart::_SettingsPageState._list.closure#1",
+                "lib/pages/settings_page.dart::_SettingsPageState._list.closure#2",
               );
               _open(item.section, item.title, wide);
             },

@@ -699,7 +699,7 @@ class _HomePageState extends State<HomePage> {
                                                         tab.tabId == _tabId,
                                                     onPressed: () {
                                                       AppLog.instance.trace(
-                                                        "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#3",
+                                                        "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#4",
                                                       );
                                                       if (tabsCurrent &&
                                                           tab.tabId != _tabId) {
@@ -751,7 +751,7 @@ class _HomePageState extends State<HomePage> {
                       _channels
                           .where((channel) {
                             AppLog.instance.trace(
-                              "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#4",
+                              "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#5",
                             );
 
                             return channel.pageId == _pageId;
@@ -766,7 +766,7 @@ class _HomePageState extends State<HomePage> {
                   onOpenAlbum: _busy ? null : _openAlbum,
                   onBrowse: (section) {
                     AppLog.instance.trace(
-                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#5",
+                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#6",
                     );
 
                     return _openBrowse(section.moreCategoryId);
@@ -777,7 +777,7 @@ class _HomePageState extends State<HomePage> {
                       ? _loadChannels
                       : () {
                           AppLog.instance.trace(
-                            "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#6",
+                            "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#7",
                           );
                           _loadHome(_pageId!, tabId: _tabId);
                         },
