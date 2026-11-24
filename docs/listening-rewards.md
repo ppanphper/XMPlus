@@ -47,12 +47,18 @@ XMPlus 使用已有账号登录态，按任务参数领取正式版与极速版�
 
 手机对照：新生成的 UUID 用于正式版请求时，`replaceConfig`、`currentDuration`、`durationConfig` 返回 `ret=0`，`recAlbumInfo` 连续两次返回 `ret=-1` 与 `Internal Server Error`；恢复原正式版设备值后，同账号 `recAlbumInfo` 返回 `ret=0`，主任务 `status=3`，四项任务均已完成。当天任务领取阶段已结束，这轮对照验证的是任务下发阶段。原工作区代码把 MD5 字节的 UUID 版本位设成 `3`，其文档先前写作 v4；实机结果支持继续使用已验证的正式版设备值设置入口。`1.2.7+24` Debug 包安装后，账号的正式版设备设置仍显示已保存的 36 字符值；此处仅记录长度，设备值留在手机安全存储。
 
-### 极速版：当前证据边界
+### 极速版：运行时设备身份链
 
-极速版 APK 多处从 `com.ximalaya.ting.android.host.util.common.e.getDeviceToken(context)` 取设备值，随后填入 `deviceId`、`device_id` 等请求字段。已检查基础 APK 的 DEX 类定义，该类定义缺席；包内 `classes.jar` 仅含 Hermes 的 `BuildConfig.class`。极速版 `libencrypt.so` 当前可见的导出符号主要是引导入口，静态材料尚未给出设备值的完整生成、保存链。
+基础 APK 经运行时保护处理。已恢复的运行时 DEX 中可定位 `com.ximalaya.ting.android.host.util.common.e`，反编译类名为 `C7057e`。其 `getDeviceToken` 首次取值后缓存至静态字段 `iqX`；正常路径调用 `DeviceTokenUtil.getDeviceToken`。后者优先从 Xuid provider 取值，provider 返回空值时调用 `getOldDeviceToken`，再进入 `EncryptUtil.getXID` 对应的原生方法 `TrnoQdFlwb`。应用启动时先注册 provider，再于后台线程初始化 Xuid SDK；首次取值的时机影响当前进程缓存的设备值。
 
-极速版自身 `netLog-main.txt` 的 Cookie 中可见 36 字符 UUID 形态，版本位为 `3`。此项属于手机运行记录，能确认实际请求的设备值形态，尚未证明其种子来源。XMPlus 的短信登录目前生成 UUID v4，导入 Cookie 时沿用其中设备值；已保存的极速版账号设备值在四档听时领取中完成实机验证。现阶段继续沿用账号保存的设备值。
+极速版 `XuidManager` 向 SDK 提供旧设备值、OAID、Android ID、SMID。SDK 按 Android ID、MAC、IMEI 的顺序选择来源，结合品牌与型号形成输入，再经原生库生成 35 字符 Xuid；`xUid_SpUtils` 的 `k_xuid` 保存该值，跨进程缓存另用 MMKV 键 `app_other_process_xuid`。这条 Xuid 路径与 `getXID` 的 36 字符 UUID 路径分别记录。
+
+在 Android 35 arm64 模拟器新安装极速版 `3.5.15.3`，`getXID`、`DeviceTokenUtil.getDeviceToken` 与 `DeviceUtil.getDeviceToken` 返回相同的 36 字符 UUID v4，该值等于 `ting_data` 中 `X_U_I_D`。清理此模拟器应用的数据再启动，Android ID 保持原值，UUID v4 更新。原生入口的运行时调用记录显示：读取 `ting_data` 的 `DEVICE_TOKEN` 与 `X_U_I_D`；两项均为空时调用 `UUID.randomUUID`，并写入 `X_U_I_D`。当前版本的新安装路径由随机 UUID v4 生成设备值。
+
+在模拟器中将 `DEVICE_TOKEN` 写入一条合成 UUID v3，并清空 `X_U_I_D` 后重启应用；`getXID` 返回该合成值，`X_U_I_D` 也保存该值。这验证了旧键迁移路径。手机现有请求中的 UUID v3 与此路径形态一致；其早期写入过程仍需旧版样本或原设备数据确认。XMPlus 短信登录当前生成 UUID v4，导入 Cookie 时沿用其中设备值；账号现有设备值已经过极速版四档领取的实机验证，当前继续沿用。
+
+2026-11-24 14:32（手机时区 CST）观察：手机 XMPlus `1.2.7+24` 已开启自动领取，极速版余额为 `93000` 秒；正式版任务主状态为 `3`，四项均完成。应用日志显示每 5 分钟执行一次正式版任务查询。次日任务刷新与到账结果继续观察。
 
 ### 后续定位顺序
 
-正式版继续追踪 Xuid 注册、旧设备值迁移与账号关联，再用任务下发结果确认生成规则。极速版继续定位缺席的 `getDeviceToken` 类及其原生调用，核实种子与持久化位置。每次新增证据均记录 APK 版本、观察入口、字段形态、服务端结果和结论层级；实现仅采用实机验证过的设备身份路径。
+正式版继续追踪 Xuid 注册、旧设备值迁移与账号关联，再用任务下发结果确认生成规则。极速版现已定位 `getDeviceToken`、原生 `getXID`、随机 UUID v4 生成及旧键迁移；历史 UUID v3 的初次写入过程仍待旧版样本核对。每次新增证据均记录 APK 版本、观察入口、字段形态、服务端结果和结论层级；实现仅采用实机验证过的设备身份路径。
