@@ -28,6 +28,7 @@ class XmlyClient {
   static const advertising = 'https://adse.ximalaya.com';
   static const mainAppVersion = '9.5.31.3';
   static const paidOrigin = 'https://mpaywsa.ximalaya.com';
+  static const _albumTracksPath = '/mobile/v1/album/track/v2';
   static const _maxResponse = 2 * 1024 * 1024;
   static const _qualities = ['m4a_128', 'm4a_64', 'mp3_64', 'mp3_32', 'm4a_24'];
   static const _maxUrlCacheFile = 16 * 1024 * 1024;
@@ -265,13 +266,14 @@ class XmlyClient {
     return method == 'GET' &&
         (const [
               '/mobile/v1/album/info',
+              _albumTracksPath,
               '/mobile-album/album/plant/detail',
               '/lite-mobile/like/v1/user-likes',
             ].contains(path) ||
             _playpageEndpoint(method, origin, path) ||
             _albumOverviewEndpoint(method, origin, path) ||
             RegExp(r'^/mobile/track/[1-9][0-9]{0,18}$').hasMatch(path) ||
-            RegExp(r'^/mobile/v1/album/track/(?:v3/)?ts-[0-9]+$')
+            RegExp(r'^/mobile/v1/album/track/v3/ts-[0-9]+$')
                 .hasMatch(path) ||
             RegExp(
               r'^/album-mobile/album/similar/querySimilarAlbumList/ts-[0-9]+$',
@@ -976,10 +978,13 @@ class XmlyClient {
   static void _paging(int page, int pageSize, {int maxPageSize = 50}) {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._paging");
 
-    if (page < 1 || page > 10000 || pageSize < 1 || pageSize > maxPageSize)
+    if (page < 1 ||
+        page > xmlyMaxPage ||
+        pageSize < 1 ||
+        pageSize > maxPageSize)
       throw XmlyException(
         'invalid_page',
-        '页码范围为 1..10000，每页 1..$maxPageSize',
+        '页码范围为 1..$xmlyMaxPage，每页 1..$maxPageSize',
         definitive: true,
       );
   }
@@ -1286,8 +1291,9 @@ class XmlyClient {
 
   String _albumTrackPath(bool useV3) {
     AppLog.instance.trace('lib/api/xmly_client.dart::XmlyClient._albumTrackPath');
-    final version = useV3 ? 'v3/' : '';
-    return '/mobile/v1/album/track/${version}ts-${DateTime.now().millisecondsSinceEpoch}';
+    return useV3
+        ? '/mobile/v1/album/track/v3/ts-${DateTime.now().millisecondsSinceEpoch}'
+        : _albumTracksPath;
   }
 
   Map<String, dynamic> _albumPageData(

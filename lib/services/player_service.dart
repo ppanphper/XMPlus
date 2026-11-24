@@ -62,6 +62,11 @@ class PlaybackSource {
   final Future<void> Function()? release;
 }
 
+/// A declined charge is a user decision, not a failed playback operation.
+class _DownloadDeclined extends DownloadStopped {
+  const _DownloadDeclined();
+}
+
 class PlayerService {
   PlayerService({
     required this.storage,
@@ -207,6 +212,7 @@ class PlayerService {
   String _appliedLoopMode = 'off';
   int? _orderLoadingRequest;
   Completer<void> _requestChanged = Completer<void>();
+  int? _downloadConfirmationRequest;
   int cursor = -1, generation = 0;
   int _request = 0, _epoch = 0, _advanceIntent = 0;
   String sourceAlbumId = '';
@@ -770,17 +776,14 @@ class PlayerService {
       "lib/services/player_service.dart::PlayerService._albumPage",
     );
 
-    if (page < 1 || page > 5000 ~/ xmlyAlbumPageSize) {
-      throw const XmlyException('catalogue_limit', '专辑播放队列最多 5000 集');
-    }
     final result = await client.album(
       album,
       page: page,
       pageSize: xmlyAlbumPageSize,
       ascending: true,
     );
-    if (result.total < 0 || result.total > 5000) {
-      throw const XmlyException('catalogue_limit', '专辑播放队列最多 5000 集');
+    if (result.total < 0) {
+      throw const XmlyException('invalid_album', '专辑分页无效，请刷新重试');
     }
     final tracks = result.tracks, offset = (page - 1) * xmlyAlbumPageSize;
     final end = (offset + xmlyAlbumPageSize).clamp(0, result.total);
@@ -912,12 +915,6 @@ class PlayerService {
       }
       final album = xmlyIdentifier(albumId),
           id = 'xmly:${xmlyIdentifier(trackId)}';
-      if (page != null && (page < 1 || page > 5000 ~/ xmlyAlbumPageSize)) {
-        throw XmlyException(
-          'invalid_page',
-          '播放页码范围为 1 到 ${5000 ~/ xmlyAlbumPageSize}',
-        );
-      }
       final intent = ++generation, request = _newRequest();
       final client = _clientForIdentity(accountIdentity);
       int? ordinalFor(Track? hint) {
@@ -1225,7 +1222,7 @@ class PlayerService {
         return;
       }
       final candidate = first.officialPosition ?? xmlyPositive(first.orderNo);
-      if (candidate == null || candidate > 5000) {
+      if (candidate == null) {
         throw const XmlyException('invalid_album', '队列缺少专辑页码，请从专辑页重新选择声音');
       }
       final request = _newRequest(), intent = _advanceIntent;
@@ -1338,19 +1335,23 @@ class PlayerService {
         })) {
           throw const XmlyException('duplicate_page', '专辑分页重复，请刷新后重试');
         }
-        if (_queue.length + added.length > 5000) {
-          throw const XmlyException('catalogue_limit', '专辑播放队列最多 5000 集');
-        }
-        // Keep any tail appended while loading, and keep its last-page metadata.
-        final next = [...added, ..._queue];
+        // If the queue is full, keep the anchor page instead of rejecting a
+        // valid earlier page. Its discarded successors can be paged in again.
+        final trimmed = _queue.length + added.length > xmlyMaxQueueTracks;
+        final next = [
+          ...added,
+          ...trimmed ? _queue.take(overlap.length) : _queue,
+        ];
         ++generation;
         await _saveQueue(
           next,
           added.length,
           album,
-          page: albumPage,
-          total: albumTotal,
-          pageSize: albumPageSize ?? xmlyAlbumPageSize,
+          page: trimmed ? page : albumPage,
+          total: trimmed ? anchorPage.total : albumTotal,
+          pageSize: trimmed
+              ? xmlyAlbumPageSize
+              : albumPageSize ?? xmlyAlbumPageSize,
         );
         _queue = next;
         cursor = added.length;
@@ -1432,6 +1433,7 @@ class PlayerService {
     final total = albumTotal, page = albumPage, size = albumPageSize;
     if (_queue.isEmpty ||
         total == null ||
+        total > xmlyMaxQueueTracks ||
         page == null ||
         size == null ||
         page * size < total ||
@@ -1523,6 +1525,12 @@ class PlayerService {
                   "lib/services/player_service.dart::PlayerService._advanceOrder.closure#1.closure#1.closure#1",
                 );
                 final first = await _albumPage(client, album, 1);
+                if (first.total > xmlyMaxQueueTracks) {
+                  throw const XmlyException(
+                    'catalogue_limit',
+                    '此模式一次最多加载 $xmlyMaxQueueTracks 集，请使用顺序播放',
+                  );
+                }
                 final values = <Track>[...first.tracks];
                 final ids = {for (final track in values) track.id};
                 total = first.total;
@@ -1933,6 +1941,8 @@ class PlayerService {
     bool manualReplay = false,
     bool startPlaying = true,
     String? localTaskId,
+    DownloadBatch? confirmedDownload,
+    bool allowDownloadConfirmation = true,
   }) async {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._openCurrent",
@@ -1951,6 +1961,8 @@ class PlayerService {
         manualReplay: manualReplay || selectedStart != null,
         startPlaying: startPlaying,
         localTaskId: localTaskId,
+        confirmedDownload: confirmedDownload,
+        allowDownloadConfirmation: allowDownloadConfirmation,
       );
       if (request == _request && _source != null) {
         _startSeekPosition = null;
@@ -1970,6 +1982,8 @@ class PlayerService {
     bool manualReplay = false,
     bool startPlaying = true,
     String? localTaskId,
+    DownloadBatch? confirmedDownload,
+    bool allowDownloadConfirmation = true,
   }) async {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._openCurrentSource",
@@ -2013,6 +2027,8 @@ class PlayerService {
                 settings.listenAndDownload,
                 request,
                 existingTaskId: preferredPrepaid,
+                confirmedDownload: confirmedDownload,
+                allowDownloadConfirmation: allowDownloadConfirmation,
               );
       },
       discard: (source) async {
@@ -2229,6 +2245,8 @@ class PlayerService {
     bool save,
     int request, {
     String? existingTaskId,
+    DownloadBatch? confirmedDownload,
+    bool allowDownloadConfirmation = true,
   }) async {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._prepare",
@@ -2245,7 +2263,13 @@ class PlayerService {
       return task.track.id == track.id && task.state == DownloadState.completed;
     });
     if (!missingDownload && (save || existingTaskId != null)) {
-      return _prepareDownload(track, request, existingTaskId: existingTaskId);
+      return _prepareDownload(
+        track,
+        request,
+        existingTaskId: existingTaskId,
+        confirmedDownload: confirmedDownload,
+        allowDownloadConfirmation: allowDownloadConfirmation,
+      );
     }
     final quality = (_settings['download'] as Map?)?['quality'] as String?;
     Future<ResolvedAudio> resolve(XmlyClient client) {
@@ -2330,53 +2354,119 @@ class PlayerService {
     }
   }
 
+  DownloadTask? _downloadTask(Track track) {
+    AppLog.instance.trace(
+      'lib/services/player_service.dart::PlayerService._downloadTask',
+    );
+    return downloads.tasks.where((item) {
+      AppLog.instance.trace(
+        'lib/services/player_service.dart::PlayerService._downloadTask.closure#1',
+      );
+      return item.accountIdentity == libraryIdentity &&
+          item.track.id == track.id &&
+          item.deduplicates;
+    }).firstOrNull;
+  }
+
+  Future<DownloadBatch> _confirmDownload(Track track, int request) async {
+    AppLog.instance.trace(
+      'lib/services/player_service.dart::PlayerService._confirmDownload',
+    );
+    if (_closed ||
+        request != _request ||
+        !effectiveSettings.listenAndDownload) {
+      throw const DownloadStopped();
+    }
+    final prepare = prepareDownload;
+    final confirm = confirmDownload;
+    if (prepare == null || confirm == null) {
+      throw const XmlyException('confirmation_required', '请先确认边听边下');
+    }
+    _downloadConfirmationRequest = request;
+    try {
+      final batch = await prepare([
+        track,
+      ], accountIdentity: _queueAccountIdentities[track.id]);
+      if (_closed ||
+          request != _request ||
+          !effectiveSettings.listenAndDownload) {
+        throw const DownloadStopped();
+      }
+      final confirmed = await confirm(batch);
+      // A late dialog result cannot authorize work for a superseded request.
+      if (_closed ||
+          request != _request ||
+          !effectiveSettings.listenAndDownload) {
+        throw const DownloadStopped();
+      }
+      if (!confirmed) {
+        if (_source == null) {
+          status = '已取消边听边下';
+          _sourceWarning = null;
+        }
+        throw const _DownloadDeclined();
+      }
+      return batch;
+    } finally {
+      if (_downloadConfirmationRequest == request) {
+        _downloadConfirmationRequest = null;
+      }
+    }
+  }
+
   Future<PlaybackSource> _prepareDownload(
     Track track,
     int request, {
     String? existingTaskId,
+    DownloadBatch? confirmedDownload,
+    bool allowDownloadConfirmation = true,
   }) async {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._prepareDownload",
     );
 
+    if (_closed || request != _request) throw const DownloadStopped();
+
     String? retained;
     try {
       var task = existingTaskId != null
           ? downloads.task(existingTaskId)
-          : downloads.tasks.where((item) {
-              AppLog.instance.trace(
-                "lib/services/player_service.dart::PlayerService._prepareDownload.closure#1",
-              );
-              return item.accountIdentity == libraryIdentity &&
-                  item.track.id == track.id &&
-                  item.deduplicates;
-            }).firstOrNull;
+          : _downloadTask(track);
       if (task == null) {
-        final prepare = prepareDownload;
-        final confirm = confirmDownload;
-        if (prepare == null || confirm == null) {
-          throw const XmlyException('confirmation_required', '请先确认边听边下');
+        // Settings already confirmed while the original source was intact.
+        // If its reusable download disappeared, require a fresh user action
+        // rather than showing a second dialog after stopping that source.
+        if (confirmedDownload == null && !allowDownloadConfirmation) {
+          throw const XmlyException(
+            'confirmation_required',
+            '下载任务已变化，请重新开启边听边下',
+          );
+        }
+        final batch =
+            confirmedDownload ?? await _confirmDownload(track, request);
+        if (_closed ||
+            request != _request ||
+            !effectiveSettings.listenAndDownload) {
+          throw const DownloadStopped();
         }
         _sourceWarning = '边听边下按整集预扣听时，已产生的在线听时不会抵扣';
         _notify();
-        final batch = await prepare([
-          track,
-        ], accountIdentity: _queueAccountIdentities[track.id]);
-        if (request != _request || !await confirm(batch)) {
-          throw const XmlyException('cancelled', '已取消边听边下');
-        }
         await downloads.enqueue(
           batch,
           confirmed: true,
           beforeStart: (items) async {
             AppLog.instance.trace(
-              "lib/services/player_service.dart::PlayerService._prepareDownload.closure#2",
+              "lib/services/player_service.dart::PlayerService._prepareDownload.closure#1",
             );
 
-            if (request != _request) throw const DownloadStopped();
+            if (_closed ||
+                request != _request ||
+                !effectiveSettings.listenAndDownload) {
+              throw const DownloadStopped();
+            }
             final selected = items.where((item) {
               AppLog.instance.trace(
-                "lib/services/player_service.dart::PlayerService._prepareDownload.closure#2.closure#1",
+                "lib/services/player_service.dart::PlayerService._prepareDownload.closure#1.closure#1",
               );
               return item.track.id == track.id;
             }).firstOrNull;
@@ -2386,12 +2476,13 @@ class PlayerService {
             }
           },
         );
+        if (_closed || request != _request) throw const DownloadStopped();
         // Preview polling may select a different account for this track.
         final selectedIdentity =
             batch.items
                 .where((item) {
                   AppLog.instance.trace(
-                    "lib/services/player_service.dart::PlayerService._prepareDownload.closure#3",
+                    "lib/services/player_service.dart::PlayerService._prepareDownload.closure#2",
                   );
                   return item.track.id == track.id;
                 })
@@ -2402,7 +2493,7 @@ class PlayerService {
             ? downloads.task(retained!)
             : downloads.tasks.where((item) {
                 AppLog.instance.trace(
-                  "lib/services/player_service.dart::PlayerService._prepareDownload.closure#4",
+                  "lib/services/player_service.dart::PlayerService._prepareDownload.closure#3",
                 );
                 return item.accountIdentity == selectedIdentity &&
                     item.track.id == track.id &&
@@ -2426,7 +2517,7 @@ class PlayerService {
           task.id,
           isActive: () {
             AppLog.instance.trace(
-              "lib/services/player_service.dart::PlayerService._prepareDownload.closure#5",
+              "lib/services/player_service.dart::PlayerService._prepareDownload.closure#4",
             );
             return !_closed && request == _request;
           },
@@ -2458,7 +2549,7 @@ class PlayerService {
         cache: mounted,
         release: () async {
           AppLog.instance.trace(
-            "lib/services/player_service.dart::PlayerService._prepareDownload.closure#6",
+            "lib/services/player_service.dart::PlayerService._prepareDownload.closure#5",
           );
 
           await _unmountCache(mounted, uri);
@@ -3112,7 +3203,7 @@ class PlayerService {
         final last = snapshot.last;
         final officialPosition = last.officialPosition;
         final candidate = officialPosition ?? xmlyPositive(last.orderNo);
-        if (candidate == null || candidate > 5000) {
+        if (candidate == null) {
           throw const XmlyException('invalid_album', '队列缺少专辑页码，请从专辑页重新选择声音');
         }
         void validateBoundary(int position) {
@@ -3205,9 +3296,6 @@ class PlayerService {
           }
           loadedPage = result.page;
           total = result.total;
-          if (snapshot.length + added.length > 5000) {
-            throw const XmlyException('catalogue_limit', '专辑播放队列最多 5000 集');
-          }
         }
 
         // A queue may start mid-album; its length is not a catalogue position.
@@ -3215,7 +3303,8 @@ class PlayerService {
         final samePage =
             officialPosition == null ||
             withinPage < xmlyAlbumPageSize ||
-            loadedPage == 5000 ~/ xmlyAlbumPageSize;
+            candidate >= total ||
+            loadedPage == xmlyMaxPage;
         final page = samePage ? loadedPage : loadedPage + 1;
         final result = await _admission(request, () {
           AppLog.instance.trace(
@@ -3246,20 +3335,28 @@ class PlayerService {
           );
 
           if (!active()) return;
-          final next = added.isEmpty ? snapshot : [...snapshot, ...added];
+          final drop = (snapshot.length + added.length - xmlyMaxQueueTracks)
+              .clamp(0, snapshot.length);
+          if (drop > cursor) {
+            throw const XmlyException('queue_full', '队列已满，请播放到列表末尾后再加载');
+          }
+          final next = added.isEmpty
+              ? snapshot
+              : [...snapshot.skip(drop), ...added];
           if (added.isNotEmpty ||
               savedPage != loadedPage ||
               savedTotal != total ||
               savedSize != xmlyAlbumPageSize) {
             await _saveQueue(
               next,
-              cursor,
+              cursor - drop,
               album,
               page: loadedPage,
               total: total,
             );
           }
           _queue = next;
+          cursor -= drop;
           committed = true;
           if (!speculative) error = null;
           status = added.isEmpty ? '已听到最新一集' : '已更新 ${added.length} 集';
@@ -3515,11 +3612,18 @@ class PlayerService {
     });
   }
 
-  Future<void> applySettings({bool updateSource = true}) {
+  /// Returns false only when the current source-change confirmation is declined.
+  Future<bool> applySettings({bool updateSource = true}) async {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService.applySettings",
     );
-    return _run(() {
+    // A later setting must release the command lock held by an older dialog.
+    if (updateSource && _downloadConfirmationRequest == _request) {
+      _newRequest(keepStartPosition: true);
+    }
+    final request = _request;
+    var accepted = true;
+    await _run(() {
       AppLog.instance.trace(
         "lib/services/player_service.dart::PlayerService.applySettings.closure#1",
       );
@@ -3529,6 +3633,46 @@ class PlayerService {
         );
 
         final settings = effectiveSettings;
+        final switchSource =
+            updateSource &&
+            _source != null &&
+            settings.listenAndDownload &&
+            sourceKind == 'online';
+        DownloadBatch? confirmedDownload;
+        if (switchSource) {
+          final track = current!;
+          final local = await _admission(request, () {
+            AppLog.instance.trace(
+              'lib/services/player_service.dart::PlayerService.applySettings.closure#1.closure#1.closure#1',
+            );
+            return _downloaded(track);
+          });
+          final missingDownload = downloads.tasks.any((task) {
+            AppLog.instance.trace(
+              'lib/services/player_service.dart::PlayerService.applySettings.closure#1.closure#1.closure#2',
+            );
+            return task.track.id == track.id &&
+                task.state == DownloadState.completed;
+          });
+          if (local == null &&
+              !missingDownload &&
+              _downloadTask(track) == null) {
+            try {
+              // Confirm before pausing, settling billing, or releasing the
+              // online source. Declining leaves playback exactly as it was.
+              confirmedDownload = await _admission(request, () {
+                AppLog.instance.trace(
+                  'lib/services/player_service.dart::PlayerService.applySettings.closure#1.closure#1.closure#3',
+                );
+                return _confirmDownload(track, request);
+              });
+            } on _DownloadDeclined {
+              accepted = false;
+              return;
+            }
+          }
+          if (_closed || request != _request) throw const DownloadStopped();
+        }
         if (_appliedLoopMode != settings.loopMode) {
           ++_advanceIntent;
           _shuffle.reset();
@@ -3545,7 +3689,6 @@ class PlayerService {
             'quality': (_settings['download'] as Map?)?['quality'],
           });
         }
-        final wasDownload = sourceKind == 'prepaid' || sourceKind == 'local';
         policy.updateSettings(settings);
         await ledger.sampleCurrentState();
         if (_source != null && !_atEnd) {
@@ -3564,23 +3707,24 @@ class PlayerService {
         await ledger.sampleCurrentState(speed: rate);
         volume = settings.outputVolume;
         await _driver.setVolume(volume);
-        if (updateSource &&
-            _source != null &&
-            settings.listenAndDownload &&
-            !wasDownload) {
+        if (switchSource) {
+          if (_closed || request != _request) throw const DownloadStopped();
           final saved = position, wasPlaying = playing;
           await _pause();
           await ledger.stopWatch();
           await _openCurrent(
-            _newRequest(),
+            request,
             resumePosition: saved,
             manualReplay: _manualChapterPosition,
             startPlaying: wasPlaying,
+            confirmedDownload: confirmedDownload,
+            allowDownloadConfirmation: false,
           );
         }
         _notify();
       });
     });
+    return accepted;
   }
 
   Future<void> playNext(Track track, {String? accountIdentity}) {
@@ -3608,8 +3752,8 @@ class PlayerService {
           );
           return item.id == track.id;
         });
-        if (existing < 0 && next.length >= 5000) {
-          throw const XmlyException('queue_full', '队列最多 5000 集');
+        if (existing < 0 && next.length >= xmlyMaxQueueTracks) {
+          throw const XmlyException('queue_full', '队列最多 $xmlyMaxQueueTracks 集');
         }
         final target = existing < 0 ? track : next.removeAt(existing);
         final index = next.indexWhere((item) {
@@ -3666,8 +3810,8 @@ class PlayerService {
           return item.id == track.id;
         }))
           return;
-        if (_queue.length >= 5000)
-          throw const XmlyException('queue_full', '队列最多 5000 集');
+        if (_queue.length >= xmlyMaxQueueTracks)
+          throw const XmlyException('queue_full', '队列最多 $xmlyMaxQueueTracks 集');
         final next = [..._queue, track], index = cursor < 0 ? 0 : cursor;
         await _saveQueue(
           next,
@@ -3856,7 +4000,8 @@ class PlayerService {
             AppLog.instance.trace(
               "lib/services/player_service.dart::PlayerService.reverseQueue.closure#1.closure#1",
             );
-            return XmlyCatalogue(client).album(album);
+            return XmlyCatalogue(client)
+                .album(album, maxTracks: xmlyMaxQueueTracks);
           },
           rateLimitRetries: 0,
           cancelled: _requestChanged.future,

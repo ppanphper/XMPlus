@@ -77,7 +77,6 @@ void _recordCatalogueError(
         'offline_playback',
         'catalogue_changed',
         'track_position_missing',
-        'batch_too_large',
         'task_busy',
         'original_account_required',
       }.contains(error.code);
@@ -200,7 +199,7 @@ Future<AlbumPage> locateCatalogueTarget({
     if (track.id != target.id ||
         track.albumId != albumId ||
         ordinal == null ||
-        ordinal > 5000)
+        ordinal > xmlyMaxPage * xmlyAlbumPageSize)
       return null;
     var result = await read((ordinal - 1) ~/ xmlyAlbumPageSize + 1);
     if (ordinal > result.total) return null;
