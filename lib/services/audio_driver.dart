@@ -46,6 +46,8 @@ abstract class AudioDriver {
   Future<void> seek(double seconds);
   Future<void> setRate(double rate);
   Future<void> setVolume(double volume);
+  void beginTransition() {}
+  Future<void> endTransition() async {}
   Future<void> close();
 }
 
@@ -140,6 +142,19 @@ class MediaKitAudioDriver implements AudioDriver {
   // Native state can still be playing while a pause/open command is queued.
   // Focus callbacks must respect the requested state from command admission.
   bool _playRequested = false;
+  int _transitionDepth = 0;
+
+  @override
+  void beginTransition() {
+    _transitionDepth++;
+  }
+
+  @override
+  Future<void> endTransition() async {
+    if (_transitionDepth == 0) return;
+    _transitionDepth--;
+    if (_transitionDepth == 0 && !_playRequested) await _releaseFocus();
+  }
   @override
   Stream<AudioSnapshot> get snapshots {
     AppLog.instance.trace(
@@ -475,7 +490,7 @@ class MediaKitAudioDriver implements AudioDriver {
       "lib/services/audio_driver.dart::MediaKitAudioDriver._releaseFocus",
     );
 
-    await _session?.setActive(false);
+    if (_transitionDepth == 0) await _session?.setActive(false);
   }
 
   Future<void> _play(int intent) async {

@@ -15,6 +15,7 @@ import 'app_log.dart';
 import 'audio_cache.dart';
 import 'audio_driver.dart';
 import 'ios_audio_stream.dart';
+import 'ios_platform.dart';
 import 'close_sequence.dart';
 import 'download_service.dart';
 import 'media_pipeline.dart';
@@ -3066,6 +3067,14 @@ class PlayerService {
     _notify();
   }
 
+  Future<void> _endAutomaticAdvance(String? work) async {
+    try {
+      await _driver.endTransition();
+    } finally {
+      if (work != null) await IosPlatform.endWork(work);
+    }
+  }
+
   Future<void> _finish() async {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._finish",
@@ -3081,73 +3090,80 @@ class PlayerService {
       await _sleep(sleep);
       return;
     }
-    await _pause();
-    if (_manualPaused || _sleepStopping || intent != _advanceIntent) return;
-    if (effectiveSettings.loopMode == 'single') {
-      await _openCurrent(_newRequest(), resumePosition: 0);
-      return;
-    }
-    final mode = effectiveSettings.loopMode;
-    if (effectiveSettings.autoNext && (mode == 'shuffle' || mode == 'all')) {
-      final epoch = _epoch;
-      _background(() {
-        AppLog.instance.trace(
-          "lib/services/player_service.dart::PlayerService._finish.closure#1",
-        );
-
-        return _advanceOrder(
-          automatic: true,
-          expectedEpoch: epoch,
-          expectedIntent: intent,
-        );
-      });
-      return;
-    }
-    if (queueSource == 'album' &&
-        cursor == _queue.length - 1 &&
-        sourceAlbumId.isNotEmpty &&
-        current?.albumId == sourceAlbumId) {
-      final pending =
-          _tailFlight != null &&
-          _tailGeneration == generation &&
-          _tailRequest == _request;
-      if (pending || _checkedEpochs.add(_epoch)) {
-        // _finish owns _commands; the tail takes that lock only to commit.
-        final epoch = _epoch, request = _request;
-        final expectedGeneration = generation, album = sourceAlbumId;
-        unawaited(() async {
-          AppLog.instance.trace(
-            "lib/services/player_service.dart::PlayerService._finish.closure#2",
-          );
-
+    final work = Platform.isIOS ? await IosPlatform.beginWork() : null;
+    if (Platform.isIOS) _driver.beginTransition();
+    var delegated = false;
+    try {
+      await _pause();
+      if (_manualPaused || _sleepStopping || intent != _advanceIntent) return;
+      if (effectiveSettings.loopMode == 'single') {
+        await _openCurrent(_newRequest(), resumePosition: 0);
+        return;
+      }
+      final mode = effectiveSettings.loopMode;
+      if (effectiveSettings.autoNext && (mode == 'shuffle' || mode == 'all')) {
+        final epoch = _epoch;
+        delegated = true;
+        _background(() async {
           try {
-            await refreshAlbumTail(album);
-          } catch (_) {
-            // A still-running speculative failure gets one completion attempt.
-            if (!pending ||
-                _closed ||
-                !_atEnd ||
-                _manualPaused ||
-                _sleepStopping ||
-                epoch != _epoch ||
-                request != _request ||
-                intent != _advanceIntent ||
-                expectedGeneration != generation ||
-                album != sourceAlbumId ||
-                _checkedEpochs.contains(epoch))
-              return;
+            await _advanceOrder(
+              automatic: true,
+              expectedEpoch: epoch,
+              expectedIntent: intent,
+            );
+          } finally {
+            await _endAutomaticAdvance(work);
+          }
+        });
+        return;
+      }
+      if (queueSource == 'album' &&
+          cursor == _queue.length - 1 &&
+          sourceAlbumId.isNotEmpty &&
+          current?.albumId == sourceAlbumId) {
+        final pending =
+            _tailFlight != null &&
+            _tailGeneration == generation &&
+            _tailRequest == _request;
+        if (pending || _checkedEpochs.add(_epoch)) {
+          // _finish owns _commands; the tail takes that lock only to commit.
+          final epoch = _epoch, request = _request;
+          final expectedGeneration = generation, album = sourceAlbumId;
+          delegated = true;
+          unawaited(() async {
             try {
               await refreshAlbumTail(album);
             } catch (_) {
-              // The final failure remains visible for an explicit retry.
+              // A still-running speculative failure gets one completion attempt.
+              if (!pending ||
+                  _closed ||
+                  !_atEnd ||
+                  _manualPaused ||
+                  _sleepStopping ||
+                  epoch != _epoch ||
+                  request != _request ||
+                  intent != _advanceIntent ||
+                  expectedGeneration != generation ||
+                  album != sourceAlbumId ||
+                  _checkedEpochs.contains(epoch))
+                return;
+              try {
+                await refreshAlbumTail(album);
+              } catch (_) {
+                // The final failure remains visible for an explicit retry.
+              }
+            } finally {
+              await _endAutomaticAdvance(work);
             }
-          }
-        }());
+          }());
+        }
+        return;
       }
-      return;
-    }
-    if (effectiveSettings.autoNext && cursor + 1 < _queue.length) {
-      await _select(cursor + 1, _newRequest());
+      if (effectiveSettings.autoNext && cursor + 1 < _queue.length) {
+        await _select(cursor + 1, _newRequest());
+      }
+    } finally {
+      if (!delegated) await _endAutomaticAdvance(work);
     }
   }
 
