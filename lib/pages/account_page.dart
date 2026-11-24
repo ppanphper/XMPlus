@@ -203,6 +203,7 @@ class _AccountPageState extends State<AccountPage> {
       for (final identity in widget.accounts.accountIds)
         [
           identity,
+          widget.accounts.liteClaiming(identity),
           if (records[identity] case final Map record)
             for (final field in ['uid', 'deviceHint', 'rewardPaused', 'quota'])
               record[field],
@@ -511,15 +512,16 @@ class _AccountPageState extends State<AccountPage> {
       AppLog.instance.trace(
         'lib/pages/account_page.dart::_AccountPageState._claim.closure#1',
       );
-      if (Platform.isAndroid) {
+      if (Platform.isAndroid || Platform.isIOS) {
         OfficialListeningBalance? balance;
         try {
           balance = await widget.accounts.claimOfficialRewards(identity);
         } on XmlyException catch (error) {
           if (error.code != 'reward_completed') rethrow;
           if (mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(const SnackBar(content: Text('今日正式版听时已领取')));
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('今日正式版听时已领取')));
           }
           return;
         }
@@ -566,20 +568,27 @@ class _AccountPageState extends State<AccountPage> {
     AppLog.instance.trace(
       'lib/pages/account_page.dart::_AccountPageState._claimLite',
     );
-    return _run(() async {
-      AppLog.instance.trace(
-        'lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1',
-      );
-      final quota = await widget.accounts.runWithAccount(identity, (client) {
-        AppLog.instance.trace(
-          'lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1.closure#1',
-        );
-        return XmlyRewards(client).claimAvailable();
-      });
-      await _storeQuota(identity, quota);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('极速版听时已领取')));
+    return AppLog.instance.runWithErrorScope(() async {
+      if (widget.accounts.liteClaiming(identity)) return;
+      final messenger = ScaffoldMessenger.of(context);
+      setState(() => _error = null);
+      try {
+        final quota = await widget.accounts.claimLiteReward(identity);
+        await _storeQuota(identity, quota);
+        if (messenger.mounted) {
+          messenger.showSnackBar(const SnackBar(content: Text('极速版听时已领取')));
+        }
+      } catch (error, stack) {
+        _recordAccountError(error, stack);
+        if (mounted) {
+          setState(() => _error = _accountError(error));
+        } else if (messenger.mounted) {
+          messenger.showSnackBar(SnackBar(content: Text(_accountError(error))));
+        }
+      } finally {
+        widget.onChanged?.call();
+        if (mounted) setState(() {});
+      }
     });
   }
 
@@ -684,8 +693,10 @@ class _AccountPageState extends State<AccountPage> {
     if (value &&
         (!await _confirm(
               context,
-              Platform.isAndroid ? '自动领取听时' : '自动检查听时',
-              Platform.isAndroid ? '定期领取正式版和极速版听时。' : '定期查询极速版听时与任务。',
+              Platform.isAndroid || Platform.isIOS ? '自动领取听时' : '自动检查听时',
+              Platform.isAndroid || Platform.isIOS
+                  ? '极速版听时低于 10 分钟时领取一档；正式版定期领取。'
+                  : '定期查询极速版听时与任务。',
               action: '开启',
             ) ||
             !mounted))
@@ -866,7 +877,7 @@ class _AccountPageState extends State<AccountPage> {
                           value: 'quota',
                           child: Text('查询听时'),
                         ),
-                      if (!missing && Platform.isAndroid)
+                      if (!missing && (Platform.isAndroid || Platform.isIOS))
                         const PopupMenuItem(
                           value: 'device',
                           child: Text('设备设置'),
@@ -899,7 +910,7 @@ class _AccountPageState extends State<AccountPage> {
               ),
             ] else ...[
               const SizedBox(height: 20),
-              if (Platform.isAndroid)
+              if (Platform.isAndroid || Platform.isIOS)
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -967,7 +978,7 @@ class _AccountPageState extends State<AccountPage> {
                   ),
                 ),
               ],
-              if (checked != null && !Platform.isAndroid)
+              if (checked != null && !Platform.isAndroid && !Platform.isIOS)
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(
@@ -983,7 +994,7 @@ class _AccountPageState extends State<AccountPage> {
                   child: Text('领取记录待核对，请在账号操作中恢复。'),
                 ),
               const SizedBox(height: 16),
-              if (Platform.isAndroid)
+              if (Platform.isAndroid || Platform.isIOS)
                 Row(
                   children: [
                     Expanded(
@@ -1002,7 +1013,8 @@ class _AccountPageState extends State<AccountPage> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: OutlinedButton(
-                        onPressed: _busy
+                        onPressed:
+                            _busy || widget.accounts.liteClaiming(identity)
                             ? null
                             : () {
                                 AppLog.instance.trace(
@@ -1010,7 +1022,11 @@ class _AccountPageState extends State<AccountPage> {
                                 );
                                 _claimLite(identity);
                               },
-                        child: const Text('极速版领取'),
+                        child: Text(
+                          widget.accounts.liteClaiming(identity)
+                              ? '领取中'
+                              : '极速版领取',
+                        ),
                       ),
                     ),
                   ],
@@ -1156,9 +1172,13 @@ class _AccountPageState extends State<AccountPage> {
               const SizedBox(height: 16),
               Card(
                 child: SwitchListTile(
-                  title: Text(Platform.isAndroid ? '自动领取听时' : '自动检查听时'),
+                  title: Text(
+                    Platform.isAndroid || Platform.isIOS ? '自动领取听时' : '自动检查听时',
+                  ),
                   subtitle: Text(
-                    Platform.isAndroid ? '定期领取正式版和极速版听时。' : '定期查询极速版听时与任务。',
+                    Platform.isAndroid || Platform.isIOS
+                        ? '极速版听时低于 10 分钟时领取一档；正式版定期领取。'
+                        : '定期查询极速版听时与任务。',
                   ),
                   value: _autoClaim,
                   onChanged: _busy ? null : _toggleAuto,

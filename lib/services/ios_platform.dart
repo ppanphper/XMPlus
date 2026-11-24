@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -13,6 +14,14 @@ class IosPlatform {
   static const channel = MethodChannel('teikengstudio.xmplus/ios');
   static List<String> _containerHomes = const [];
   static final _expired = StreamController<String>.broadcast();
+
+  static Future<String> rewardUserAgent() {
+    AppLog.instance.trace(
+      'lib/services/ios_platform.dart::IosPlatform.rewardUserAgent',
+    );
+    return InAppWebViewController.getDefaultUserAgent();
+  }
+
   static Stream<String> get expiredWork {
     AppLog.instance.trace(
       "lib/services/ios_platform.dart::IosPlatform.expiredWork.get",

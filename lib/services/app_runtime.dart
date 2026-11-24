@@ -10,7 +10,6 @@ import 'package:path_provider/path_provider.dart';
 import '../api/xmly_client.dart';
 import '../api/xmly_catalogue.dart';
 import '../api/xmly_experience.dart';
-import '../api/xmly_rewards.dart';
 import '../storage/app_storage.dart';
 import '../storage/config_archive.dart';
 import '../storage/credential_store.dart';
@@ -713,7 +712,7 @@ class AppRuntime extends ChangeNotifier {
           remaining = receipt.balanceAfter!;
         }
       }
-      if (remaining >= 7200) return null;
+      if (remaining >= 600) return null;
     }
     return _refreshAccountRewards(identity, client);
   }
@@ -736,12 +735,25 @@ class AppRuntime extends ChangeNotifier {
       }
 
       if (!allowed()) return null;
-      final rewards = XmlyRewards(client, automaticEnabled: true);
       var increase = 0;
+      String? rewardErrorCode;
       try {
         final before = await client.queryQuota();
         if (!allowed()) return null;
-        final after = await rewards.refresh(shouldContinue: allowed);
+        var after = before;
+        if ((Platform.isAndroid || Platform.isIOS) &&
+            before.remainingSeconds - ledger.debt(identity).ceil() < 600) {
+          try {
+            final claim = accounts.claimLiteReward(
+              identity,
+              shouldContinue: allowed,
+            );
+            if (!closing && !_closed) notifyListeners();
+            after = await claim;
+          } on XmlyException catch (error) {
+            rewardErrorCode = error.code;
+          }
+        }
         _rewardChecks[identity] = after;
         await storage.transaction((state) {
           AppLog.instance.trace(
@@ -758,7 +770,7 @@ class AppRuntime extends ChangeNotifier {
         // Claim availability must not prevent an otherwise authorized download.
         return null;
       }
-      if (rewards.needsReview) {
+      if (rewardErrorCode == 'reward_result_unknown') {
         await storage.transaction((state) {
           AppLog.instance.trace(
             "lib/services/app_runtime.dart::AppRuntime._refreshAccountRewards.closure#1.closure#2",
@@ -1058,15 +1070,11 @@ class AppRuntime extends ChangeNotifier {
         for (final identity in accounts.accountIds.toList()) {
           if (!allowed()) break;
           try {
-            await accounts.runWithAccount(identity, (client) async {
-              AppLog.instance.trace(
-                "lib/services/app_runtime.dart::AppRuntime._refreshRewards.closure#1.closure#1",
-              );
-
-              if (!allowed()) return;
-              await _refreshAccountRewards(identity, client);
-            });
-            if (Platform.isAndroid && allowed()) {
+            await _refreshAccountRewards(
+              identity,
+              accounts.clientFor(identity),
+            );
+            if ((Platform.isAndroid || Platform.isIOS) && allowed()) {
               final deviceId = await accounts.officialDeviceId(identity);
               if (deviceId != null && deviceId.isNotEmpty) {
                 try {

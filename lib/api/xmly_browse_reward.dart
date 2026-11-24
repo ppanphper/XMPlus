@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
@@ -6,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../models/xmly_models.dart';
 import '../services/android_platform.dart';
 import '../services/app_log.dart';
+import '../services/ios_platform.dart';
 import 'xmly_client.dart';
 import 'xmly_crypto.dart';
 
@@ -276,7 +278,9 @@ class XmlyBrowseReward {
       for (final item in pending)
         if (item['taskType'] == 2) item,
     ];
-    final userAgent = await AndroidPlatform.rewardUserAgent();
+    final userAgent = Platform.isIOS
+        ? await IosPlatform.rewardUserAgent()
+        : await AndroidPlatform.rewardUserAgent();
     if (browse.isEmpty) {
       final video = [
         for (final item in pending)

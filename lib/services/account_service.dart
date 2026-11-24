@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import '../api/xmly_client.dart';
 import '../api/xmly_browse_reward.dart';
 import '../api/xmly_login.dart';
+import '../api/xmly_rewards.dart';
 import '../models/download_task.dart';
 import '../models/xmly_models.dart';
 import '../storage/app_storage.dart';
@@ -70,6 +71,7 @@ class AccountService {
   final Lock _accounts = Lock();
   final Map<String, XmlyClient> _clients = {};
   final Map<String, XmlyClient> _settlementClients = {};
+  final Map<String, Future<Quota>> _liteClaims = {};
   final Set<String> _missingCredentials = {};
   bool _loaded = false;
   bool _closed = false;
@@ -155,6 +157,34 @@ class AccountService {
     } finally {
       rewardClient.close();
     }
+  }
+
+  bool liteClaiming(String identity) => _liteClaims.containsKey(identity);
+
+  Future<Quota> claimLiteReward(
+    String identity, {
+    bool Function()? shouldContinue,
+  }) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.claimLiteReward',
+    );
+    final current = _liteClaims[identity];
+    if (current != null) return current;
+    final client = clientFor(identity);
+    late final Future<Quota> claim;
+    claim = () async {
+      try {
+        return await XmlyRewards(
+          client,
+        ).claimNext(shouldContinue: shouldContinue);
+      } finally {
+        if (identical(_liteClaims[identity], claim)) {
+          _liteClaims.remove(identity);
+        }
+      }
+    }();
+    _liteClaims[identity] = claim;
+    return claim;
   }
 
   bool get admissionPaused {

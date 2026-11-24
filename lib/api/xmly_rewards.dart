@@ -8,30 +8,19 @@ import 'package:uuid/uuid.dart';
 
 import '../models/xmly_models.dart';
 import '../services/android_platform.dart';
+import '../services/ios_platform.dart';
 import 'xmly_client.dart';
 import 'xmly_crypto.dart';
 import "../services/app_log.dart";
 
 class XmlyRewards {
-  XmlyRewards(
-    this.client, {
-    this.automaticEnabled = false,
-    DateTime Function()? clock,
-  }) : _clock = clock ?? DateTime.now {
+  XmlyRewards(this.client, {DateTime Function()? clock})
+    : _clock = clock ?? DateTime.now {
     AppLog.instance.trace("lib/api/xmly_rewards.dart::XmlyRewards.new");
   }
   final XmlyClient client;
   final DateTime Function() _clock;
   final _lock = Lock();
-  bool automaticEnabled;
-  String lastError = '';
-  String? lastErrorCode;
-  bool get needsReview {
-    AppLog.instance.trace(
-      'lib/api/xmly_rewards.dart::XmlyRewards.needsReview.get',
-    );
-    return lastErrorCode == 'reward_result_unknown';
-  }
 
   static const _salt = '0ab3443b71834b33be675af744d76ef0aaa74cd2b60c4b67';
   static const _path = '/lite-earn/ting/welfare/';
@@ -277,7 +266,9 @@ class XmlyRewards {
       XmlyClient.advertising,
       '/subapp/common',
       data: {
-        'userAgent': await AndroidPlatform.rewardUserAgent(),
+        'userAgent': Platform.isIOS
+            ? await IosPlatform.rewardUserAgent()
+            : await AndroidPlatform.rewardUserAgent(),
         'version': '3.5.15',
         'network': 'wifi',
         'localDuration': '${quota.remainingSeconds}',
@@ -312,48 +303,24 @@ class XmlyRewards {
     };
   }
 
-  Future<Quota> claimAvailable({bool Function()? shouldContinue}) async {
-    AppLog.instance.trace(
-      'lib/api/xmly_rewards.dart::XmlyRewards.claimAvailable',
-    );
-    while (shouldContinue?.call() ?? true) {
-      final data = (await tasks())['data'] as Map<String, dynamic>;
-      final tiers = data['tierList'];
-      if (data['showTask'] == false || tiers is! List || tiers.isEmpty) {
-        throw const XmlyException('reward_unavailable', '当前暂无极速版领时任务');
-      }
-      if (tiers.every((tier) {
-        AppLog.instance.trace(
-          'lib/api/xmly_rewards.dart::XmlyRewards.claimAvailable.closure#1',
-        );
-        return tier is Map && tier['status'] == 1;
-      })) {
-        return client.queryQuota();
-      }
-      final advertisement = await _advertisement();
-      await Future<void>.delayed(const Duration(seconds: 35));
-      if (shouldContinue?.call() == false) break;
-      await claimAndRefresh(advertisement);
+  Future<Quota> claimNext({bool Function()? shouldContinue}) async {
+    AppLog.instance.trace('lib/api/xmly_rewards.dart::XmlyRewards.claimNext');
+    final data = (await tasks())['data'] as Map<String, dynamic>;
+    final tiers = data['tierList'];
+    if (data['showTask'] == false || tiers is! List || tiers.isEmpty) {
+      throw const XmlyException('reward_unavailable', '当前暂无极速版领时任务');
     }
-    return client.queryQuota();
-  }
-
-  Future<Quota> refresh({bool Function()? shouldContinue}) async {
-    AppLog.instance.trace('lib/api/xmly_rewards.dart::XmlyRewards.refresh');
-    lastError = '';
-    lastErrorCode = null;
-    final quota = await client.queryQuota();
-    if (!automaticEnabled || !(shouldContinue?.call() ?? true)) return quota;
-    try {
-      if (!Platform.isAndroid) {
-        await tasks();
-        return quota;
-      }
-      return await claimAvailable(shouldContinue: shouldContinue);
-    } on XmlyException catch (error) {
-      lastErrorCode = error.code;
-      lastError = error.message;
-      return quota;
+    if (tiers.every((tier) {
+      AppLog.instance.trace(
+        'lib/api/xmly_rewards.dart::XmlyRewards.claimNext.closure#1',
+      );
+      return tier is Map && tier['status'] == 1;
+    })) {
+      throw const XmlyException('reward_completed', '今天的听时任务已完成');
     }
+    final advertisement = await _advertisement();
+    await Future<void>.delayed(const Duration(seconds: 35));
+    if (shouldContinue?.call() == false) return client.queryQuota();
+    return claimAndRefresh(advertisement);
   }
 }
