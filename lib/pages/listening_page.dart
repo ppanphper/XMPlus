@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -2258,7 +2259,7 @@ class _ListeningPageState extends State<ListeningPage>
             Text(
               '我的收听',
               style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                fontSize: 30,
+                fontSize: Platform.isAndroid ? 24 : 30,
                 fontWeight: FontWeight.w600,
                 height: 1.3,
               ),
@@ -2321,7 +2322,7 @@ class _ListeningPageState extends State<ListeningPage>
             720 * MediaQuery.textScalerOf(context).scale(14) / 14) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [title, const SizedBox(height: 16), search],
+            children: [title, const SizedBox(height: 10), search],
           );
         }
         return Row(

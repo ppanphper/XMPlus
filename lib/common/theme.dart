@@ -197,12 +197,14 @@ ThemeData getThemeData({
   const fontFamily = 'HarmonyOS Sans SC';
   final dark = brightness == Brightness.dark;
   final ios = defaultTargetPlatform == TargetPlatform.iOS;
+  final android = defaultTargetPlatform == TargetPlatform.android;
+  final mobile = ios || android;
   final isOled = brightness == Brightness.dark && oledBlack;
   var colorScheme = ColorScheme.fromSeed(
     seedColor: seedColor,
     brightness: brightness,
   );
-  if (ios) {
+  if (mobile) {
     // Neutral surfaces keep content, playback and navigation in one palette.
     // Custom seeds still control the accent; OLED overrides these surfaces below.
     colorScheme = colorScheme.copyWith(
@@ -299,17 +301,17 @@ ThemeData getThemeData({
       surfaceTintColor: Colors.transparent,
       titleTextStyle: TextStyle(
         fontFamily: fontFamily,
-        fontSize: 16,
-        fontWeight: FontWeight.normal,
+        fontSize: android ? 18 : 16,
+        fontWeight: android ? FontWeight.w600 : FontWeight.normal,
         color: colorScheme.onSurface,
       ),
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: isOled ? Colors.black : colorScheme.surfaceContainerLow,
       surfaceTintColor: Colors.transparent,
-      height: ios ? 68 : null,
-      elevation: ios ? 0 : null,
-      labelTextStyle: ios
+      height: mobile ? 68 : null,
+      elevation: mobile ? 0 : null,
+      labelTextStyle: mobile
           ? WidgetStateProperty.resolveWith((states) {
               AppLog.instance.trace(
                 "lib/common/theme.dart::getThemeData.closure#1",
@@ -327,7 +329,7 @@ ThemeData getThemeData({
               );
             })
           : null,
-      indicatorColor: ios
+      indicatorColor: mobile
           ? Colors.transparent
           : colorScheme.primary.withValues(alpha: .1),
       indicatorShape: RoundedRectangleBorder(
@@ -411,16 +413,36 @@ ThemeData getThemeData({
       ),
     ),
     cardTheme: CardThemeData(
-      elevation: ios || isOled ? 0 : .5,
+      elevation: mobile || isOled ? 0 : .5,
       margin: EdgeInsets.zero,
       color: colorScheme.surfaceContainerLow,
       shadowColor: softShadow,
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18),
-        side: BorderSide(color: surfaceEdge),
+        borderRadius: BorderRadius.circular(android ? 14 : 18),
+        side: android ? BorderSide.none : BorderSide(color: surfaceEdge),
       ),
     ),
+    chipTheme: android
+        ? ChipThemeData(
+            backgroundColor: colorScheme.surfaceContainerHigh,
+            selectedColor: colorScheme.primaryContainer,
+            labelStyle: TextStyle(
+              fontFamily: fontFamily,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: colorScheme.onSurfaceVariant,
+            ),
+            secondaryLabelStyle: TextStyle(
+              fontFamily: fontFamily,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: colorScheme.onPrimaryContainer,
+            ),
+            side: BorderSide.none,
+            shape: const StadiumBorder(),
+          )
+        : null,
     dialogTheme: DialogThemeData(
       elevation: 12,
       shadowColor: softShadow,
@@ -486,15 +508,21 @@ ThemeData getThemeData({
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: colorScheme.surfaceContainerLow,
+      fillColor: android
+          ? colorScheme.surfaceContainerHigh
+          : colorScheme.surfaceContainerLow,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: BorderSide(color: colorScheme.outlineVariant),
+        borderSide: android
+            ? BorderSide.none
+            : BorderSide(color: colorScheme.outlineVariant),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
-        borderSide: BorderSide(color: colorScheme.outlineVariant),
+        borderSide: android
+            ? BorderSide.none
+            : BorderSide(color: colorScheme.outlineVariant),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(14),
@@ -502,7 +530,15 @@ ThemeData getThemeData({
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(style: buttonStyle),
-    outlinedButtonTheme: OutlinedButtonThemeData(style: buttonStyle),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: android
+          ? buttonStyle.copyWith(
+              side: WidgetStatePropertyAll(
+                BorderSide(color: colorScheme.outlineVariant),
+              ),
+            )
+          : buttonStyle,
+    ),
     textButtonTheme: TextButtonThemeData(style: buttonStyle),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: buttonStyle.copyWith(elevation: const WidgetStatePropertyAll(0)),

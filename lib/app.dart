@@ -761,8 +761,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
     final mobile =
         Platform.isIOS || Theme.of(context).platform == TargetPlatform.android;
     final route = mobile ? _playerRoutes.playerTransition : null;
-    if (Platform.isIOS &&
-        (widget.runtime.player.current == null || hidePlayer)) {
+    if (mobile && (widget.runtime.player.current == null || hidePlayer)) {
       return navigator;
     }
     final blocked = _playerRoutes.current is PopupRoute || route != null;

@@ -725,33 +725,37 @@ class _AccountPageState extends State<AccountPage> {
     });
   }
 
+  String _listeningDuration(int seconds) {
+    AppLog.instance.trace(
+      'lib/pages/account_page.dart::_AccountPageState._listeningDuration',
+    );
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    return hours > 0 ? '$hours 小时 $minutes 分' : '$minutes 分 ${seconds % 60} 秒';
+  }
+
   Widget _account(String identity, Map record) {
     AppLog.instance.trace(
-      "lib/pages/account_page.dart::_AccountPageState._account",
+      'lib/pages/account_page.dart::_AccountPageState._account',
     );
-
     final uid =
         record['uid'] is String &&
             RegExp(r'^[0-9]{1,20}$').hasMatch(record['uid'])
         ? record['uid'] as String
         : '未知';
-    final rawHint = record['deviceHint'];
-    final hint =
-        rawHint is String &&
-            RegExp(r'^(?:\*{4}|…[A-Za-z0-9_.:\-]{4})$').hasMatch(rawHint)
-        ? rawHint
-        : '****';
     final primary = widget.accounts.primaryAccountId == identity;
     final missing = widget.accounts.missingCredentialAccountIds.contains(
       identity,
     );
     final active = widget.accounts.activeClient?.identity == identity;
     final paused = record['rewardPaused'] == true;
-    final quota = record['quota'];
     Quota? verified;
     try {
-      if (quota is Map)
-        verified = Quota.fromJson(Map<String, dynamic>.from(quota));
+      if (record['quota'] is Map) {
+        verified = Quota.fromJson(
+          Map<String, dynamic>.from(record['quota'] as Map),
+        );
+      }
     } catch (error, stack) {
       AppLog.instance.write(
         AppLogLevel.warning,
@@ -766,6 +770,8 @@ class _AccountPageState extends State<AccountPage> {
     final remaining = verified?.remainingSeconds;
     final checked = verified?.checkedAt.toLocal();
     final avatar = _profiles[identity]?.avatarUrl;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -774,210 +780,227 @@ class _AccountPageState extends State<AccountPage> {
           children: [
             Row(
               children: [
-                Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: ClipOval(
-                    child: SizedBox.square(
-                      dimension: 40,
-                      child: avatar == null
-                          ? const Icon(Icons.account_circle_outlined, size: 40)
-                          : Image(
-                              image: LoggedNetworkImage(avatar.toString()),
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stack) {
-                                AppLog.instance.trace(
-                                  'lib/pages/account_page.dart::_AccountPageState._account.closure#1',
-                                );
-                                return const Icon(
-                                  Icons.account_circle_outlined,
-                                  size: 40,
-                                );
-                              },
-                            ),
-                    ),
+                ClipOval(
+                  child: SizedBox.square(
+                    dimension: 44,
+                    child: avatar == null
+                        ? const Icon(Icons.account_circle_outlined, size: 44)
+                        : Image(
+                            image: LoggedNetworkImage(avatar.toString()),
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stack) {
+                              AppLog.instance.trace(
+                                'lib/pages/account_page.dart::_AccountPageState._account.closure#1',
+                              );
+                              return const Icon(
+                                Icons.account_circle_outlined,
+                                size: 44,
+                              );
+                            },
+                          ),
                   ),
                 ),
+                const SizedBox(width: 12),
                 Expanded(
-                  child: AdaptiveText(
-                    '账号 $uid',
-                    style: Theme.of(context).textTheme.titleMedium,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AdaptiveText(
+                        '账号 $uid',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      if (primary || active)
+                        Text(
+                          primary ? '主账号' : '当前使用',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-                if (primary)
-                  const Padding(
-                    padding: EdgeInsets.only(left: 8),
-                    child: Chip(label: Text('主账号')),
-                  ),
-                if (active && !primary)
-                  const Padding(
-                    padding: EdgeInsets.only(left: 8),
-                    child: Chip(label: Text('当前使用')),
-                  ),
+                PopupMenuButton<String>(
+                  tooltip: '账号操作',
+                  enabled: !_busy,
+                  icon: const Icon(Icons.more_vert_rounded),
+                  onSelected: (value) {
+                    AppLog.instance.trace(
+                      'lib/pages/account_page.dart::_AccountPageState._account.closure#2',
+                    );
+                    switch (value) {
+                      case 'login':
+                        _openImport(recoveryIdentity: identity);
+                      case 'primary':
+                        _run(() {
+                          AppLog.instance.trace(
+                            'lib/pages/account_page.dart::_AccountPageState._account.closure#2.closure#1',
+                          );
+                          return widget.accounts.setPrimary(identity);
+                        });
+                      case 'quota':
+                        _quota(identity);
+                      case 'device':
+                        _setOfficialDevice(identity);
+                      case 'resume':
+                        _resumeRewards(identity, uid);
+                      case 'remove':
+                        _remove(identity, uid);
+                    }
+                  },
+                  itemBuilder: (_) {
+                    AppLog.instance.trace(
+                      'lib/pages/account_page.dart::_AccountPageState._account.closure#3',
+                    );
+                    return [
+                      PopupMenuItem(
+                        value: 'login',
+                        child: Text(missing ? '恢复登录' : '更新登录'),
+                      ),
+                      if (!missing && (!primary || !active))
+                        PopupMenuItem(
+                          value: 'primary',
+                          child: Text(primary ? '切回主账号' : '设为主账号'),
+                        ),
+                      if (!missing)
+                        const PopupMenuItem(
+                          value: 'quota',
+                          child: Text('查询听时'),
+                        ),
+                      if (!missing && Platform.isAndroid)
+                        const PopupMenuItem(
+                          value: 'device',
+                          child: Text('设备设置'),
+                        ),
+                      if (paused)
+                        const PopupMenuItem(
+                          value: 'resume',
+                          child: Text('解除领取暂停'),
+                        ),
+                      const PopupMenuItem(value: 'remove', child: Text('移除账号')),
+                    ];
+                  },
+                ),
               ],
             ),
-            AdaptiveText('设备 $hint'),
-            const SizedBox(height: 8),
             if (missing) ...[
-              const Text('安全凭据缺失，可重新导入原账号或移除登录记录。已有资料、下载和扣时记录均已保留。'),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () {
-                            AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#2",
-                            );
-                            _openImport(recoveryIdentity: identity);
-                          },
-                    icon: const Icon(Icons.key),
-                    label: const Text('恢复此账号登录'),
-                  ),
-                  TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () {
-                            AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#3",
-                            );
-                            _remove(identity, uid);
-                          },
-                    child: const Text('移除'),
-                  ),
-                ],
+              const SizedBox(height: 16),
+              const Text('登录凭据待恢复，账号资料与下载记录已保留。'),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: _busy
+                    ? null
+                    : () => _openImport(recoveryIdentity: identity),
+                child: const Text('恢复登录'),
               ),
             ] else ...[
-              Text(
-                remaining == null
-                    ? '极速版听时：未核验'
-                    : '极速版听时：${remaining ~/ 3600} 小时 ${(remaining % 3600) ~/ 60} 分 ${remaining % 60} 秒',
-              ),
-              if (checked != null)
-                AdaptiveText(
-                  '核验于 ${checked.toString().split('.').first}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+              const SizedBox(height: 20),
               if (Platform.isAndroid)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '正式版听时',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          AdaptiveText(
+                            officialBalance == null
+                                ? '待查询'
+                                : officialBalance.allDay
+                                ? '全天畅听'
+                                : _listeningDuration(officialBalance.seconds),
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '极速版听时',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          AdaptiveText(
+                            remaining == null
+                                ? '待查询'
+                                : _listeningDuration(remaining),
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                )
+              else ...[
                 Text(
-                  officialBalance == null
-                      ? '正式版听时：待查询'
-                      : officialBalance.allDay
-                      ? '正式版听时：全天畅听'
-                      : '正式版听时：${officialBalance.seconds ~/ 3600} 小时 ${(officialBalance.seconds % 3600) ~/ 60} 分 ${officialBalance.seconds % 60} 秒',
+                  '可用听时',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                AdaptiveText(
+                  remaining == null ? '待查询' : _listeningDuration(remaining),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              if (checked != null && !Platform.isAndroid)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                    '更新于 ${checked.toString().split('.').first}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 ),
               if (paused)
                 const Padding(
                   padding: EdgeInsets.only(top: 8),
-                  child: Text('旧版领取暂停记录尚未解除，听时和任务查询不受影响。'),
+                  child: Text('领取记录待核对，请在账号操作中恢复。'),
                 ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : () {
-                            AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#4",
-                            );
-                            _openImport(recoveryIdentity: identity);
-                          },
-                    icon: const Icon(Icons.key),
-                    label: const Text('更新登录'),
-                  ),
-                  if (!primary || !active)
-                    OutlinedButton(
-                      onPressed: _busy
-                          ? null
-                          : () {
-                              AppLog.instance.trace(
-                                "lib/pages/account_page.dart::_AccountPageState._account.closure#5",
-                              );
-                              _run(() {
-                                AppLog.instance.trace(
-                                  "lib/pages/account_page.dart::_AccountPageState._account.closure#5.closure#1",
-                                );
-                                return widget.accounts.setPrimary(identity);
-                              });
-                            },
-                      child: Text(primary ? '切回主账号' : '设为主账号'),
+              const SizedBox(height: 16),
+              if (Platform.isAndroid)
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: _busy ? null : () => _claim(identity),
+                        child: const Text('正式版领取'),
+                      ),
                     ),
-                  OutlinedButton(
-                    onPressed: _busy
-                        ? null
-                        : () {
-                            AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#6",
-                            );
-                            _quota(identity);
-                          },
-                    child: const Text('查询听时'),
-                  ),
-                  OutlinedButton(
-                    onPressed: _busy
-                        ? null
-                        : () {
-                            AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#7",
-                            );
-                            _claim(identity);
-                          },
-                    child: Text(Platform.isAndroid ? '领取正式版听时' : '检查领时任务'),
-                  ),
-                  if (Platform.isAndroid)
-                    OutlinedButton(
-                      onPressed: _busy
-                          ? null
-                          : () {
-                              AppLog.instance.trace(
-                                'lib/pages/account_page.dart::_AccountPageState._account.closure#8',
-                              );
-                              _claimLite(identity);
-                            },
-                      child: const Text('领取极速版听时'),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _busy ? null : () => _claimLite(identity),
+                        child: const Text('极速版领取'),
+                      ),
                     ),
-                  if (Platform.isAndroid)
-                    TextButton(
-                      onPressed: _busy
-                          ? null
-                          : () {
-                              AppLog.instance.trace(
-                                'lib/pages/account_page.dart::_AccountPageState._account.closure#9',
-                              );
-                              _setOfficialDevice(identity);
-                            },
-                      child: const Text('正式版设备'),
-                    ),
-                  if (paused)
-                    OutlinedButton(
-                      onPressed: _busy
-                          ? null
-                          : () {
-                              AppLog.instance.trace(
-                                "lib/pages/account_page.dart::_AccountPageState._account.closure#10",
-                              );
-                              _resumeRewards(identity, uid);
-                            },
-                      child: const Text('解除领取暂停'),
-                    ),
-                  TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () {
-                            AppLog.instance.trace(
-                              "lib/pages/account_page.dart::_AccountPageState._account.closure#11",
-                            );
-                            _remove(identity, uid);
-                          },
-                    child: const Text('移除'),
-                  ),
-                ],
-              ),
+                  ],
+                )
+              else
+                FilledButton(
+                  onPressed: _busy ? null : () => _claim(identity),
+                  child: const Text('检查领时任务'),
+                ),
             ],
           ],
         ),
@@ -1007,26 +1030,75 @@ class _AccountPageState extends State<AccountPage> {
               MediaQuery.sizeOf(context).width < 320 ? 8 : 16,
             ),
             children: [
-              AdaptiveText('账号', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  FilledButton.icon(
-                    onPressed: _busy ? null : _openImport,
-                    icon: const Icon(Icons.key),
-                    label: const Text('Cookie 登录'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : _openSms,
-                    icon: const Icon(Icons.sms_outlined),
-                    label: const Text('短信登录'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              const Text('主账号用于默认请求。'),
+              if (!Platform.isAndroid || ids.isNotEmpty)
+                Row(
+                  children: [
+                    if (!Platform.isAndroid)
+                      Expanded(
+                        child: AdaptiveText(
+                          '账号',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                    if (ids.isNotEmpty)
+                      PopupMenuButton<String>(
+                        tooltip: '添加账号',
+                        enabled: !_busy,
+                        onSelected: (value) {
+                          AppLog.instance.trace(
+                            'lib/pages/account_page.dart::_AccountPageState.build.closure#1',
+                          );
+                          if (value == 'sms') {
+                            _openSms();
+                          } else {
+                            _openImport();
+                          }
+                        },
+                        itemBuilder: (_) {
+                          AppLog.instance.trace(
+                            'lib/pages/account_page.dart::_AccountPageState.build.closure#2',
+                          );
+                          return const [
+                            PopupMenuItem(value: 'import', child: Text('导入登录')),
+                            PopupMenuItem(value: 'sms', child: Text('短信登录')),
+                          ];
+                        },
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.person_add_alt_1_outlined, size: 20),
+                              SizedBox(width: 6),
+                              Text('添加账号'),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              if (ids.isEmpty) ...[
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: _busy ? null : _openImport,
+                      icon: const Icon(Icons.key),
+                      label: const Text('导入登录'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : _openSms,
+                      icon: const Icon(Icons.sms_outlined),
+                      label: const Text('短信登录'),
+                    ),
+                  ],
+                ),
+              ],
               if (_busy)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
@@ -1043,7 +1115,7 @@ class _AccountPageState extends State<AccountPage> {
                   ),
                 ),
               const SizedBox(height: 12),
-              if (ids.isEmpty)
+              if (ids.isEmpty && !Platform.isAndroid)
                 const Card(
                   child: Padding(
                     padding: EdgeInsets.all(24),
@@ -1051,7 +1123,10 @@ class _AccountPageState extends State<AccountPage> {
                   ),
                 ),
               for (final id in ids)
-                if (records[id] is Map) _account(id, records[id] as Map),
+                if (records[id] is Map) ...[
+                  _account(id, records[id] as Map),
+                  const SizedBox(height: 12),
+                ],
               const SizedBox(height: 16),
               Card(
                 child: SwitchListTile(

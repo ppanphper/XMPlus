@@ -465,7 +465,7 @@ class _HomePageState extends State<HomePage> {
 
     final tabsCurrent = _tabsPageId == _pageId;
     final compactHeader =
-        Platform.isIOS &&
+        (Platform.isIOS || Platform.isAndroid) &&
         MediaQuery.orientationOf(context) == Orientation.landscape;
     final header = Padding(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -478,7 +478,7 @@ class _HomePageState extends State<HomePage> {
           for (final (index, label) in const ['推荐', '分类', '排行'].indexed)
             AppTabButton(
               label: label,
-              prominent: Platform.isIOS,
+              prominent: Platform.isIOS || Platform.isAndroid,
               selected: _section == index,
               onPressed: () {
                 AppLog.instance.trace(
@@ -572,7 +572,7 @@ class _HomePageState extends State<HomePage> {
                       if (_channels.isNotEmpty)
                         Padding(
                           padding: EdgeInsets.only(
-                            top: Platform.isIOS ? 0 : 16,
+                            top: Platform.isIOS || Platform.isAndroid ? 0 : 16,
                             bottom: 4,
                           ),
                           child: ScrollConfiguration(
@@ -586,7 +586,7 @@ class _HomePageState extends State<HomePage> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   for (final channel in _channels)
-                                    if (Platform.isIOS)
+                                    if (Platform.isIOS || Platform.isAndroid)
                                       Padding(
                                         padding: const EdgeInsets.only(
                                           right: 8,
@@ -661,23 +661,55 @@ class _HomePageState extends State<HomePage> {
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
                                               for (final tab in _tabs)
-                                                AppTabButton(
-                                                  key: ValueKey(tab.tabId),
-                                                  label: tab.title,
-                                                  selected: tab.tabId == _tabId,
-                                                  onPressed: () {
-                                                    AppLog.instance.trace(
-                                                      "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#3",
-                                                    );
-                                                    if (tabsCurrent &&
-                                                        tab.tabId != _tabId) {
-                                                      _loadHome(
-                                                        _pageId!,
-                                                        tabId: tab.tabId,
+                                                if (Platform.isAndroid)
+                                                  Padding(
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                          right: 8,
+                                                        ),
+                                                    child: ChoiceChip(
+                                                      key: ValueKey(tab.tabId),
+                                                      label: Text(tab.title),
+                                                      selected:
+                                                          tab.tabId == _tabId,
+                                                      showCheckmark: false,
+                                                      side: BorderSide.none,
+                                                      shape:
+                                                          const StadiumBorder(),
+                                                      onSelected: (_) {
+                                                        AppLog.instance.trace(
+                                                          "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#3",
+                                                        );
+                                                        if (tabsCurrent &&
+                                                            tab.tabId !=
+                                                                _tabId) {
+                                                          _loadHome(
+                                                            _pageId!,
+                                                            tabId: tab.tabId,
+                                                          );
+                                                        }
+                                                      },
+                                                    ),
+                                                  )
+                                                else
+                                                  AppTabButton(
+                                                    key: ValueKey(tab.tabId),
+                                                    label: tab.title,
+                                                    selected:
+                                                        tab.tabId == _tabId,
+                                                    onPressed: () {
+                                                      AppLog.instance.trace(
+                                                        "lib/pages/home_page.dart::_HomePageState._recommendations.closure#1.closure#3",
                                                       );
-                                                    }
-                                                  },
-                                                ),
+                                                      if (tabsCurrent &&
+                                                          tab.tabId != _tabId) {
+                                                        _loadHome(
+                                                          _pageId!,
+                                                          tabId: tab.tabId,
+                                                        );
+                                                      }
+                                                    },
+                                                  ),
                                             ],
                                           ),
                                         ),
@@ -771,11 +803,11 @@ class _HomePageState extends State<HomePage> {
         final theme = Theme.of(context);
         final colors = theme.colorScheme;
         final title = Text(
-          '发现好声音',
+          Platform.isAndroid ? '发现' : '发现好声音',
           style: theme.textTheme.headlineLarge?.copyWith(
-            fontSize: 30,
+            fontSize: Platform.isAndroid ? 24 : 30,
             fontWeight: FontWeight.w600,
-            letterSpacing: .5,
+            letterSpacing: Platform.isAndroid ? 0 : .5,
           ),
         );
         final search = Row(
@@ -788,8 +820,8 @@ class _HomePageState extends State<HomePage> {
                   backgroundColor: colors.surfaceContainerHigh,
                   foregroundColor: colors.onSurfaceVariant,
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 14,
+                    horizontal: 14,
+                    vertical: 10,
                   ),
                 ),
                 icon: const Icon(Icons.search, size: 20),
@@ -821,7 +853,7 @@ class _HomePageState extends State<HomePage> {
             720 * MediaQuery.textScalerOf(context).scale(14) / 14) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [title, const SizedBox(height: 16), search],
+            children: [title, const SizedBox(height: 10), search],
           );
         }
         return Row(

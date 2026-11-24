@@ -31,6 +31,14 @@ import 'media_settings_page.dart';
 import 'playback_settings_page.dart';
 import 'album_reviews_page.dart';
 
+Color _detailAccent(BuildContext context) => Platform.isAndroid
+    ? Theme.of(context).colorScheme.primary
+    : const Color(0xffff414a);
+
+Color _detailSelectedSurface(BuildContext context) => Platform.isAndroid
+    ? Theme.of(context).colorScheme.primaryContainer
+    : const Color(0xffffeeee);
+
 void _recordCatalogueError(
   String operation,
   Object error,
@@ -2112,10 +2120,10 @@ class _AlbumPageViewState extends State<AlbumPageView> {
                         child: TextButton(
                           style: TextButton.styleFrom(
                             foregroundColor: selected
-                                ? const Color(0xffff414a)
+                                ? _detailAccent(context)
                                 : Theme.of(context).colorScheme.onSurface,
                             backgroundColor: selected
-                                ? const Color(0xffffeeee)
+                                ? _detailSelectedSurface(context)
                                 : Theme.of(context)
                                       .colorScheme
                                       .surfaceContainerLow,
@@ -3002,7 +3010,7 @@ class _AlbumPageViewState extends State<AlbumPageView> {
               style: TextButton.styleFrom(
                 foregroundColor: _rangeStart == null
                     ? Colors.grey
-                    : const Color(0xffff414a),
+                    : _detailAccent(context),
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 alignment: Alignment.centerRight,
               ),
@@ -3901,7 +3909,7 @@ class _AlbumPageViewState extends State<AlbumPageView> {
                           width: 22,
                           decoration: BoxDecoration(
                             color: _tab == index
-                                ? const Color(0xffff414a)
+                                ? _detailAccent(context)
                                 : Colors.transparent,
                             borderRadius: BorderRadius.circular(2),
                           ),
@@ -4069,7 +4077,7 @@ class _AlbumPageViewState extends State<AlbumPageView> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
-                    color: current ? const Color(0xffff414a) : Colors.grey,
+                    color: current ? _detailAccent(context) : Colors.grey,
                   ),
                 ),
               ),
@@ -4254,7 +4262,7 @@ class _AlbumPageViewState extends State<AlbumPageView> {
                       alignment: Alignment.centerLeft,
                       child: Text(
                         '第$_rangeStart–${(_rangeStart! + _pageSize - 1).clamp(1, _catalogueTotal)}集',
-                        style: const TextStyle(color: Color(0xffff414a)),
+                        style: TextStyle(color: _detailAccent(context)),
                       ),
                     ),
                   ),

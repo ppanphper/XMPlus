@@ -172,6 +172,50 @@ class _SettingsPageState extends State<SettingsPage> {
     );
 
     final theme = Theme.of(context);
+    if (Platform.isAndroid && !wide) {
+      final groups = [
+        _items.take(4).toList(),
+        _items.skip(4).take(2).toList(),
+        _items.skip(6).toList(),
+      ];
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: [
+          Text(
+            '设置',
+            style: theme.textTheme.headlineLarge?.copyWith(
+              fontSize: 24,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 16),
+          for (final group in groups) ...[
+            Card(
+              child: Column(
+                children: [
+                  for (final (index, item) in group.indexed) ...[
+                    if (index > 0) const Divider(height: 1, indent: 56),
+                    ListTile(
+                      leading: Icon(
+                        item.icon,
+                        color: theme.colorScheme.primary,
+                      ),
+                      title: Text(item.title),
+                      trailing: const Icon(
+                        Icons.chevron_right_rounded,
+                        size: 20,
+                      ),
+                      onTap: () => _open(item.section, item.title, false),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ],
+      );
+    }
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 12),
       children: [
@@ -931,7 +975,9 @@ class _AboutSettings extends StatelessWidget {
                       if (!await launchUrl(
                         Uri.https(
                           'github.com',
-                          Platform.isIOS ? '/ppanphper/XMPlus' : '/teikengstudio/XMPlus/tree/$ref/licenses/android',
+                          Platform.isIOS
+                              ? '/ppanphper/XMPlus'
+                              : '/teikengstudio/XMPlus/tree/$ref/licenses/android',
                         ),
                         mode: LaunchMode.externalApplication,
                       )) {

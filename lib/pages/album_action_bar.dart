@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../services/app_log.dart';
@@ -26,7 +28,10 @@ class AlbumActionBar extends StatelessWidget {
     AppLog.instance.trace(
       "lib/pages/album_action_bar.dart::AlbumActionBar.build",
     );
-    const red = Color(0xffff414a);
+    final colors = Theme.of(context).colorScheme;
+    final accent = Platform.isAndroid
+        ? colors.primary
+        : const Color(0xffff414a);
     return Material(
       color: Theme.of(context).colorScheme.surface,
       elevation: 8,
@@ -65,7 +70,7 @@ class AlbumActionBar extends StatelessWidget {
                                 .surfaceContainerLow,
                             foregroundColor: subscribed == true
                                 ? Colors.grey
-                                : red,
+                                : accent,
                             minimumSize: const Size(112, 48),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(10),
@@ -96,20 +101,24 @@ class AlbumActionBar extends StatelessWidget {
                         child: FilledButton.icon(
                           onPressed: playBusy ? null : onPlay,
                           style: FilledButton.styleFrom(
-                            backgroundColor: red,
-                            foregroundColor: Colors.white,
+                            backgroundColor: accent,
+                            foregroundColor: Platform.isAndroid
+                                ? colors.onPrimary
+                                : Colors.white,
                             minimumSize: const Size(0, 48),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
                           icon: playBusy
-                              ? const SizedBox(
+                              ? SizedBox(
                                   width: 18,
                                   height: 18,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 2,
-                                    color: Colors.white,
+                                    color: Platform.isAndroid
+                                        ? colors.onPrimary
+                                        : Colors.white,
                                   ),
                                 )
                               : const Icon(

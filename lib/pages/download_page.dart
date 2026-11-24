@@ -1307,6 +1307,9 @@ class _DownloadPageState extends State<DownloadPage> {
           );
           return job.state != 'completed' && job.state != 'cancelled';
         });
+    if (Platform.isAndroid && !hasUnfinished) {
+      return const Center(child: Text('暂无下载任务'));
+    }
     final buttonStyle = OutlinedButton.styleFrom(
       minimumSize: const Size(48, 48),
     );
@@ -2917,6 +2920,21 @@ class _DownloadPageState extends State<DownloadPage> {
               constraints: const BoxConstraints(maxWidth: 720),
               child: Column(
                 children: [
+                  if (Platform.isAndroid)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '下载',
+                          style: Theme.of(context).textTheme.headlineLarge
+                              ?.copyWith(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                      ),
+                    ),
                   const TabBar(
                     tabs: [
                       Tab(text: '下载任务'),

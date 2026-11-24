@@ -47,7 +47,10 @@ class AppTabButton extends StatelessWidget {
                 foregroundColor: selected
                     ? colors.primary
                     : colors.onSurfaceVariant,
-                backgroundColor: selected && !prominent
+                backgroundColor:
+                    selected &&
+                        !prominent &&
+                        theme.platform != TargetPlatform.android
                     ? colors.primary.withValues(alpha: .055)
                     : Colors.transparent,
                 textStyle: theme.textTheme.labelLarge?.copyWith(
