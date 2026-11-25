@@ -107,32 +107,16 @@ class AccountService {
     return _officialDevices.synchronized(() async {
       final key = _officialDeviceKey(identity);
       final saved = await secrets.read(key);
-      if (saved != null && saved.isNotEmpty) return saved;
+      if (saved != null &&
+          saved.isNotEmpty &&
+          !(Platform.isIOS && saved.startsWith('XAU') && saved.length == 35)) {
+        return saved;
+      }
       if (!Platform.isIOS) return null;
-      final generated = _newOfficialDeviceId();
+      final generated = const Uuid().v4();
       await secrets.write(key, generated);
       return generated;
     });
-  }
-
-  static String _newOfficialDeviceId() {
-    final hex = const Uuid().v4().replaceAll('-', '');
-    final source = [
-      for (var index = 0; index < hex.length; index += 2)
-        int.parse(hex.substring(index, index + 2), radix: 16),
-    ];
-    const salt = <int>[
-      0x43, 0x94, 0x80, 0x91, 0xbb, 0x37, 0x93, 0x03,
-      0x19, 0x3d, 0x95, 0x8b, 0xd2, 0x6f, 0xe9, 0x8c,
-      0x9d, 0xf3, 0xa2, 0x47, 0x0e, 0x8c, 0xc9, 0xb1,
-      0x0f, 0xc6, 0x71, 0xc4, 0x78, 0x40, 0x4b, 0x1a,
-    ];
-    final digest = sha256.convert([0x58, 0x41, 0x55, ...source, ...salt]).bytes;
-    const positions = <int>[3, 6, 9, 12, 19, 22, 25, 28];
-    return 'XAU${base64UrlEncode([
-      ...source,
-      for (final position in positions) digest[position],
-    ])}';
   }
 
   Future<void> setOfficialDeviceId(String identity, String deviceId) async {
