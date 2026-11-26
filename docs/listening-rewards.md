@@ -47,6 +47,11 @@ XMPlus 使用已有账号登录态，按任务参数领取正式版与极速版�
 
 手机对照：新生成的 UUID 用于正式版请求时，`replaceConfig`、`currentDuration`、`durationConfig` 返回 `ret=0`，`recAlbumInfo` 连续两次返回 `ret=-1` 与 `Internal Server Error`；恢复原正式版设备值后，同账号 `recAlbumInfo` 返回 `ret=0`，主任务 `status=3`，四项任务均已完成。当天任务领取阶段已结束，这轮对照验证的是任务下发阶段。原工作区代码把 MD5 字节的 UUID 版本位设成 `3`，其文档先前写作 v4；实机结果支持继续使用已验证的正式版设备值设置入口。`1.2.7+24` Debug 包安装后，账号的正式版设备设置仍显示已保存的 36 字符值；此处仅记录长度，设备值留在手机安全存储。
 
+
+2026-11-25 华为多空间对照：按用户确认，主空间与隐私空间登录同一账号。隐私空间正式版 `9.5.31.3` 领取 50 分钟后，余额从 `8:09:59` 增至 `8:59:59`；主空间 XMPlus 查询到 `8:59:59`。两个空间的系统 Android ID 各异。隐私空间正式版在获得存储权限并重启后写出 36 字符 UUID v3 设备值。用户反馈此前已比较主空间与隐私空间正式版设备值；现存记录缺少完整比对结果，后续先查原始记录，再安排实测。
+
+2026-11-26 华为临时用户 `11` 对照：该用户与隐私空间的系统 Android ID 各异；正式版写出的设备值同为 36 字符 UUID v3，前 5 位与后 4 位和隐私空间此前记录一致。以该值和已有测试账号查询，`replaceConfig` 返回 `ret=0`、`canFreeListenV2=1`，场景和扩展字段已下发；`recAlbumInfo` 返回 `ret=0`，主任务 `status=3`，四项任务均已领取。这确认任务接口接受该值；完整设备值关系与额度独立性仍需原始记录支持。临时用户、读取工具和模拟器均已清理。
+
 ### 极速版：运行时设备身份链
 
 基础 APK 经运行时保护处理。已恢复的运行时 DEX 中可定位 `com.ximalaya.ting.android.host.util.common.e`，反编译类名为 `C7057e`。其 `getDeviceToken` 首次取值后缓存至静态字段 `iqX`；正常路径调用 `DeviceTokenUtil.getDeviceToken`。后者优先从 Xuid provider 取值，provider 返回空值时调用 `getOldDeviceToken`，再进入 `EncryptUtil.getXID` 对应的原生方法 `TrnoQdFlwb`。应用启动时先注册 provider，再于后台线程初始化 Xuid SDK；首次取值的时机影响当前进程缓存的设备值。
