@@ -72,6 +72,30 @@ String _accountError(Object error) {
   };
 }
 
+String _balanceError(Object error) {
+  final code = error is XmlyException ? error.code : null;
+  if (const {'network', 'network_error', 'http_error'}.contains(code)) {
+    return '连接失败或超时，请检查网络。';
+  }
+  return _accountError(error);
+}
+
+Widget _balanceValue(BuildContext context, String? error, String value) {
+  final theme = Theme.of(context);
+  if (error != null) {
+    return Text(
+      error,
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.error,
+      ),
+    );
+  }
+  return AdaptiveText(
+    value,
+    style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+  );
+}
+
 void _recordAccountError(Object error, StackTrace stack) {
   AppLog.instance.trace("lib/pages/account_page.dart::_recordAccountError");
 
@@ -178,6 +202,8 @@ class _AccountPageState extends State<AccountPage> {
   String? _error;
   late String _viewKey;
   final _officialBalances = <String, OfficialListeningBalance>{};
+  final _officialBalanceErrors = <String, String>{};
+  final _liteBalanceErrors = <String, String>{};
   final _profiles = <String, PublicProfile>{};
   final _profileClients = <String, XmlyClient>{};
   final _profileRequests = <String, XmlyClient>{};
@@ -493,13 +519,45 @@ class _AccountPageState extends State<AccountPage> {
         "lib/pages/account_page.dart::_AccountPageState._quota.closure#1",
       );
 
-      final quota = await widget.accounts.runWithAccount(identity, (client) {
-        AppLog.instance.trace(
-          "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.closure#1",
-        );
-        return widget.queryQuota?.call(identity) ?? client.queryQuota();
-      });
-      await _storeQuota(identity, quota);
+      _liteBalanceErrors.remove(identity);
+      _officialBalanceErrors.remove(identity);
+
+      Future<void> queryLite() async {
+        try {
+          final quota = await widget.accounts.runWithAccount(identity, (
+            client,
+          ) {
+            AppLog.instance.trace(
+              "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.closure#1",
+            );
+            return widget.queryQuota?.call(identity) ?? client.queryQuota();
+          });
+          await _storeQuota(identity, quota);
+        } catch (error, stack) {
+          _recordAccountError(error, stack);
+          _liteBalanceErrors[identity] = _balanceError(error);
+        } finally {
+          if (mounted) setState(() {});
+        }
+      }
+
+      Future<void> queryOfficial() async {
+        try {
+          final client = await widget.accounts.ensureOfficialClient(identity);
+          _officialBalances[identity] = await XmlyBrowseReward(client)
+              .queryBalance();
+        } catch (error, stack) {
+          _recordAccountError(error, stack);
+          _officialBalanceErrors[identity] = _balanceError(error);
+        } finally {
+          if (mounted) setState(() {});
+        }
+      }
+
+      await Future.wait([
+        queryLite(),
+        if (Platform.isAndroid || Platform.isIOS) queryOfficial(),
+      ]);
       _refreshProfiles(identity: identity);
     });
   }
@@ -519,14 +577,14 @@ class _AccountPageState extends State<AccountPage> {
         } on XmlyException catch (error) {
           if (error.code != 'reward_completed') rethrow;
           if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(const SnackBar(content: Text('今日正式版听时已领取')));
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text('今日正式版听时已领取')));
           }
           return;
         }
         if (balance == null) return;
         _officialBalances[identity] = balance;
+        _officialBalanceErrors.remove(identity);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -548,6 +606,7 @@ class _AccountPageState extends State<AccountPage> {
             return XmlyRewards(client).claimAndRefresh({});
           });
           await _storeQuota(identity, quota);
+          _liteBalanceErrors.remove(identity);
         } on XmlyException catch (error) {
           if (error.code == 'reward_result_unknown') {
             await widget.storage.transaction((state) {
@@ -575,6 +634,7 @@ class _AccountPageState extends State<AccountPage> {
       try {
         final quota = await widget.accounts.claimLiteReward(identity);
         await _storeQuota(identity, quota);
+        _liteBalanceErrors.remove(identity);
         if (messenger.mounted) {
           messenger.showSnackBar(const SnackBar(content: Text('极速版听时已领取')));
         }
@@ -647,6 +707,10 @@ class _AccountPageState extends State<AccountPage> {
         'lib/pages/account_page.dart::_AccountPageState._setOfficialDevice.closure#2',
       );
       await widget.accounts.setOfficialDeviceId(identity, value);
+      if (value.trim() != (current ?? '')) {
+        _officialBalances.remove(identity);
+        _officialBalanceErrors.remove(identity);
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -778,6 +842,8 @@ class _AccountPageState extends State<AccountPage> {
       );
     }
     final officialBalance = _officialBalances[identity];
+    final officialBalanceError = _officialBalanceErrors[identity];
+    final liteBalanceError = _liteBalanceErrors[identity];
     final remaining = verified?.remainingSeconds;
     final checked = verified?.checkedAt.toLocal();
     final avatar = _profiles[identity]?.avatarUrl;
@@ -925,15 +991,14 @@ class _AccountPageState extends State<AccountPage> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          AdaptiveText(
+                          _balanceValue(
+                            context,
+                            officialBalanceError,
                             officialBalance == null
                                 ? '待查询'
                                 : officialBalance.allDay
                                 ? '全天畅听'
                                 : _listeningDuration(officialBalance.seconds),
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
                           ),
                         ],
                       ),
@@ -950,13 +1015,12 @@ class _AccountPageState extends State<AccountPage> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          AdaptiveText(
+                          _balanceValue(
+                            context,
+                            liteBalanceError,
                             remaining == null
                                 ? '待查询'
                                 : _listeningDuration(remaining),
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
                           ),
                         ],
                       ),
@@ -971,11 +1035,10 @@ class _AccountPageState extends State<AccountPage> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                AdaptiveText(
+                _balanceValue(
+                  context,
+                  liteBalanceError,
                   remaining == null ? '待查询' : _listeningDuration(remaining),
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
                 ),
               ],
               if (checked != null && !Platform.isAndroid && !Platform.isIOS)
