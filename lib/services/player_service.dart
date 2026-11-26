@@ -34,6 +34,7 @@ class PlaybackSource {
     required this.identity,
     required this.kind,
     this.requiresReward = false,
+    this.wallet = 'lite',
     this.taskId,
     this.release,
     bool supportsRanges = true,
@@ -49,7 +50,7 @@ class PlaybackSource {
     }
   }
   final Uri uri;
-  final String identity, kind;
+  final String identity, kind, wallet;
   final bool requiresReward, _supportsRanges;
   final AudioCache? cache;
   bool get supportsRanges {
@@ -73,6 +74,7 @@ class PlayerService {
     required this.storage,
     required this.accounts,
     required this.ledger,
+    required this.officialLedger,
     required this.downloads,
     required this.pipeline,
     required this.anonymous,
@@ -106,7 +108,7 @@ class PlayerService {
       if (recorded) {
         // Device time boundaries must not wait behind quota/debit requests.
         // Only the in-memory sample changes here; journal writes stay serialized.
-        ledger.recordPlaybackState(
+        _playbackLedger.recordPlaybackState(
           playing: snapshot.playing,
           buffering: snapshot.buffering,
           speed: rate,
@@ -185,6 +187,14 @@ class PlayerService {
   final AppStorage storage;
   final AccountService accounts;
   final UsageLedger ledger;
+  final UsageLedger officialLedger;
+  UsageLedger get _playbackLedger {
+    AppLog.instance.trace(
+      'lib/services/player_service.dart::PlayerService._playbackLedger.get',
+    );
+    return _source?.wallet == 'official' ? officialLedger : ledger;
+  }
+
   final DownloadService downloads;
   final MediaPipeline pipeline;
   final XmlyClient anonymous;
@@ -573,7 +583,9 @@ class PlayerService {
       "lib/services/player_service.dart::PlayerService._message",
     );
 
-    if (failure is SocketException || failure is TimeoutException || failure is HttpException) {
+    if (failure is SocketException ||
+        failure is TimeoutException ||
+        failure is HttpException) {
       return '音频连接失败，请检查网络后重试';
     }
     if (failure is FileSystemException) {
@@ -1940,6 +1952,7 @@ class PlayerService {
     double? resumePosition,
     ({double position, int updatedAt, bool fromCloud})? historyProgress,
     bool manualReplay = false,
+    bool forceOfficial = false,
     bool startPlaying = true,
     String? localTaskId,
     DownloadBatch? confirmedDownload,
@@ -1960,6 +1973,7 @@ class PlayerService {
         resumePosition: resumePosition ?? selectedStart,
         historyProgress: historyProgress,
         manualReplay: manualReplay || selectedStart != null,
+        forceOfficial: forceOfficial,
         startPlaying: startPlaying,
         localTaskId: localTaskId,
         confirmedDownload: confirmedDownload,
@@ -1981,6 +1995,7 @@ class PlayerService {
     double? resumePosition,
     ({double position, int updatedAt, bool fromCloud})? historyProgress,
     bool manualReplay = false,
+    bool forceOfficial = false,
     bool startPlaying = true,
     String? localTaskId,
     DownloadBatch? confirmedDownload,
@@ -2027,6 +2042,7 @@ class PlayerService {
                 track,
                 settings.listenAndDownload,
                 request,
+                forceOfficial: forceOfficial,
                 existingTaskId: preferredPrepaid,
                 confirmedDownload: confirmedDownload,
                 allowDownloadConfirmation: allowDownloadConfirmation,
@@ -2064,13 +2080,31 @@ class PlayerService {
     }
     try {
       final resume = saved ?? knownProgress?.position ?? 0.0;
-      await ledger.startWatch(
-        identity: source.identity,
-        trackId: track.id,
-        requiresReward: source.requiresReward,
-        prepaid: source.kind != 'online',
-        speed: settings.speed,
-      );
+      try {
+        await _playbackLedger.startWatch(
+          identity: source.identity,
+          trackId: track.id,
+          requiresReward: source.requiresReward,
+          prepaid: source.kind != 'online',
+          speed: settings.speed,
+        );
+      } on XmlyException catch (failure) {
+        if (failure.code != 'insufficient_quota' ||
+            source.wallet != 'lite' ||
+            source.kind != 'online')
+          rethrow;
+        await _driver.stop();
+        await _release();
+        await _openCurrentSource(
+          request,
+          resumePosition: saved,
+          historyProgress: historyProgress,
+          manualReplay: manualReplay,
+          startPlaying: startPlaying,
+          forceOfficial: true,
+        );
+        return;
+      }
       _completedTrackId = null;
       _endSeekPosition = null;
       _actual = false;
@@ -2218,7 +2252,9 @@ class PlayerService {
   }
 
   Future<Uri> _mountCache(AudioCache cache, int request) async {
-    AppLog.instance.trace('lib/services/player_service.dart::PlayerService._mountCache');
+    AppLog.instance.trace(
+      'lib/services/player_service.dart::PlayerService._mountCache',
+    );
     if (Platform.isIOS) {
       final uri = await IosAudioStream.instance.mount(cache);
       if (_closed || request != _request) {
@@ -2233,7 +2269,9 @@ class PlayerService {
   }
 
   Future<void> _unmountCache(AudioCache cache, Uri uri) async {
-    AppLog.instance.trace('lib/services/player_service.dart::PlayerService._unmountCache');
+    AppLog.instance.trace(
+      'lib/services/player_service.dart::PlayerService._unmountCache',
+    );
     if (uri.scheme == IosAudioStream.scheme) {
       await IosAudioStream.instance.unmount(uri);
     } else {
@@ -2245,6 +2283,7 @@ class PlayerService {
     Track track,
     bool save,
     int request, {
+    bool forceOfficial = false,
     String? existingTaskId,
     DownloadBatch? confirmedDownload,
     bool allowDownloadConfirmation = true,
@@ -2263,29 +2302,63 @@ class PlayerService {
       );
       return task.track.id == track.id && task.state == DownloadState.completed;
     });
-    if (!missingDownload && (save || existingTaskId != null)) {
-      return _prepareDownload(
-        track,
-        request,
-        existingTaskId: existingTaskId,
-        confirmedDownload: confirmedDownload,
-        allowDownloadConfirmation: allowDownloadConfirmation,
-      );
+    if (identity != 'anonymous') {
+      await accounts.waitForLiteClaim(identity);
+      if (_closed || request != _request) throw const DownloadStopped();
     }
     final quality = (_settings['download'] as Map?)?['quality'] as String?;
     Future<ResolvedAudio> resolve(XmlyClient client) {
       AppLog.instance.trace(
-        "lib/services/player_service.dart::PlayerService._prepare.resolve",
+        'lib/services/player_service.dart::PlayerService._prepare.resolve',
       );
       return client.resolve(track.id, quality: quality, preferCached: true);
     }
 
-    final audio = identity == 'anonymous'
-        ? await resolve(anonymous)
-        : await accounts.runWithAccount(identity, resolve);
+    var wallet = 'lite';
+    XmlyClient? officialClient;
+    ResolvedAudio audio;
+    try {
+      if (forceOfficial) {
+        throw const XmlyException('insufficient_quota', '极速版听时已用完');
+      }
+      if (!missingDownload && (save || existingTaskId != null)) {
+        return await _prepareDownload(
+          track,
+          request,
+          existingTaskId: existingTaskId,
+          confirmedDownload: confirmedDownload,
+          allowDownloadConfirmation: allowDownloadConfirmation,
+        );
+      }
+      audio = identity == 'anonymous'
+          ? await resolve(anonymous)
+          : await accounts.runWithAccount(identity, resolve);
+      if (audio.requiresReward && identity != 'anonymous') {
+        await ledger.queryQuota(identity);
+        if ((ledger.availableSeconds(identity) ?? 0) <= 0) {
+          throw const XmlyException('insufficient_quota', '极速版听时已用完');
+        }
+      }
+    } on XmlyException catch (failure) {
+      if (failure.code != 'insufficient_quota' || identity == 'anonymous')
+        rethrow;
+      officialClient = await accounts.ensureOfficialClient(identity);
+      await officialLedger.synchronize(identity);
+      audio = await accounts.runWithAccount(identity, (_) {
+        AppLog.instance.trace(
+          'lib/services/player_service.dart::PlayerService._prepare.resolveOfficial',
+        );
+        return resolve(officialClient!);
+      });
+      wallet = 'official';
+    }
     if (_closed || request != _request) throw const DownloadStopped();
-    if (audio.accountIdentity != identity || audio.track.id != track.id) {
-      throw const XmlyException('identity_mismatch', '声音授权与账号不符');
+    final expectedIdentity = wallet == 'official'
+        ? officialClient!.identity
+        : identity;
+    if (audio.accountIdentity != expectedIdentity ||
+        audio.track.id != track.id) {
+      throw const XmlyException('identity_mismatch', '请使用原账号获取声音授权');
     }
     final reward = audio.requiresReward;
     final directory = p.join(
@@ -2323,7 +2396,12 @@ class PlayerService {
 
         return identity == 'anonymous'
             ? refresh(anonymous)
-            : accounts.runWithAccount(identity, refresh);
+            : accounts.runWithAccount(identity, (client) {
+                AppLog.instance.trace(
+                  'lib/services/player_service.dart::PlayerService._prepare.refreshWallet',
+                );
+                return refresh(wallet == 'official' ? officialClient! : client);
+              });
       },
     );
     try {
@@ -2333,6 +2411,7 @@ class PlayerService {
         identity: identity,
         kind: 'online',
         requiresReward: reward,
+        wallet: wallet,
         cache: cache,
         release: () async {
           AppLog.instance.trace(
@@ -2630,7 +2709,11 @@ class PlayerService {
 
     await _driver.pause();
     _setPlaying(false);
-    await ledger.observe(playing: false, buffering: buffering, speed: rate);
+    await _playbackLedger.observe(
+      playing: false,
+      buffering: buffering,
+      speed: rate,
+    );
     await _saveProgress(terminal: true);
     final task = currentTaskId;
     final download = _settings['download'] as Map? ?? const {};
@@ -2678,7 +2761,7 @@ class PlayerService {
           return;
         }
         if (sourceKind != 'local' &&
-            (ledger.needsRestart ||
+            (_playbackLedger.needsRestart ||
                 _source!.taskId != null ||
                 await _admission(request, () {
                       AppLog.instance.trace(
@@ -2978,12 +3061,13 @@ class PlayerService {
       }
     }
     if (playing && !buffering) _actual = true;
-    await ledger.observe(
+    await _playbackLedger.observe(
       playing: playing,
       buffering: buffering,
       speed: rate,
       stateAlreadyRecorded: stateAlreadyRecorded,
     );
+    if (await _switchWalletIfNeeded()) return;
     if (_actual && _cloudResumeEpoch != _epoch)
       await _official.observe(
         'player',
@@ -3059,12 +3143,43 @@ class PlayerService {
     }
     if (_source != null) {
       if (!_source!.supportsRanges) status = '此音频暂不支持快速跳转，跳转时可能需要等待';
-      await ledger.sampleCurrentState();
+      await _playbackLedger.sampleCurrentState();
+      if (await _switchWalletIfNeeded()) return;
       if (_actual && _clock().millisecondsSinceEpoch - _savedAt >= 5000) {
         await _saveProgress();
       }
     }
     _notify();
+  }
+
+  Future<bool> _switchWalletIfNeeded() async {
+    AppLog.instance.trace(
+      'lib/services/player_service.dart::PlayerService._switchWalletIfNeeded',
+    );
+    final source = _source;
+    if (source == null ||
+        source.kind != 'online' ||
+        !source.requiresReward ||
+        !playing ||
+        _manualPaused ||
+        _atEnd ||
+        (duration > 0 && position >= duration))
+      return false;
+    final activeLedger = _playbackLedger;
+    final available = activeLedger.availableSeconds(source.identity);
+    if (available == null || available > 0) return false;
+    if (source.wallet == 'lite')
+      await accounts.waitForLiteClaim(source.identity);
+    await activeLedger.queryQuota(source.identity);
+    if ((activeLedger.availableSeconds(source.identity) ?? 0) > 0) return false;
+    final resume = position;
+    await _openCurrent(
+      _newRequest(),
+      resumePosition: resume,
+      manualReplay: true,
+      forceOfficial: source.wallet == 'lite',
+    );
+    return true;
   }
 
   Future<void> _endAutomaticAdvance(String? work) async {
@@ -3706,7 +3821,7 @@ class PlayerService {
           });
         }
         policy.updateSettings(settings);
-        await ledger.sampleCurrentState();
+        await _playbackLedger.sampleCurrentState();
         if (_source != null && !_atEnd) {
           final intro = policy.introSeekPosition(position);
           if (intro != null) {
@@ -3720,14 +3835,14 @@ class PlayerService {
         }
         await _driver.setRate(settings.speed);
         rate = settings.speed;
-        await ledger.sampleCurrentState(speed: rate);
+        await _playbackLedger.sampleCurrentState(speed: rate);
         volume = settings.outputVolume;
         await _driver.setVolume(volume);
         if (switchSource) {
           if (_closed || request != _request) throw const DownloadStopped();
           final saved = position, wasPlaying = playing;
           await _pause();
-          await ledger.stopWatch();
+          await _playbackLedger.stopWatch();
           await _openCurrent(
             request,
             resumePosition: saved,
@@ -4171,7 +4286,11 @@ class PlayerService {
         task.state == DownloadState.failed) {
       await _driver.pause();
       _setPlaying(false);
-      await ledger.observe(playing: false, buffering: buffering, speed: rate);
+      await _playbackLedger.observe(
+        playing: false,
+        buffering: buffering,
+        speed: rate,
+      );
       await _saveProgress(terminal: true);
       _notify();
     }
@@ -4200,16 +4319,20 @@ class PlayerService {
     await _driver.pause();
     _setPlaying(false);
     if (preserveUnknown ||
-        (ledger.needsRestart &&
+        (_playbackLedger.needsRestart &&
             localTarget != null &&
             await _downloaded(localTarget) != null)) {
-      await ledger.captureForRestore();
+      await _playbackLedger.captureForRestore();
       await _saveProgress(terminal: true, sync: false);
     } else {
       try {
-        await ledger.observe(playing: false, buffering: buffering, speed: rate);
+        await _playbackLedger.observe(
+          playing: false,
+          buffering: buffering,
+          speed: rate,
+        );
         await _saveProgress(terminal: true);
-        await ledger.stopWatch();
+        await _playbackLedger.stopWatch();
       } on XmlyException catch (error) {
         if (!const {
               'usage_uncertain',
@@ -4221,7 +4344,7 @@ class PlayerService {
         }
         // A verified local source needs no new debit. Save the watch without
         // changing any pending operation or receipt.
-        await ledger.captureForRestore();
+        await _playbackLedger.captureForRestore();
         await _saveProgress(terminal: true, sync: false);
       }
     }

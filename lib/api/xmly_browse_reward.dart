@@ -118,6 +118,7 @@ class XmlyBrowseReward {
     final config = raw is String ? xmlyMap(jsonDecode(raw)) : xmlyMap(raw);
     final scene = '${config['sceneInfo'] ?? ''}'.split('_');
     final context = {
+      'sceneInfo': config['sceneInfo'] ?? '',
       if (scene.length >= 2) 'sceneId': int.parse(scene[1]),
       if (scene.length >= 2) 'groupId': int.parse(scene[0]),
       'ext': config['freeListenExt'] ?? '',
@@ -159,6 +160,81 @@ class XmlyBrowseReward {
     );
     return OfficialListeningBalance.fromApi(
       _data(response, 'currentDuration', requireSuccess: true),
+    );
+  }
+
+  Future<Map<String, dynamic>> trackInfo(String number) async {
+    AppLog.instance.trace(
+      'lib/api/xmly_browse_reward.dart::XmlyBrowseReward.trackInfo',
+    );
+    final context = await _context();
+    final response = await client.request(
+      'GET',
+      XmlyClient.mobile,
+      '/mobile-playpage/track/v3/baseInfo/${DateTime.now().millisecondsSinceEpoch}',
+      signed: true,
+      query: {
+        'device': 'android',
+        'trackId': number,
+        'trackQualityLevel': '3',
+        if ('${context['sceneInfo']}'.isNotEmpty)
+          'sceneInfo': context['sceneInfo'],
+        if ('${context['ext']}'.isNotEmpty) 'freeListenExt': context['ext'],
+        if ('${context['newFreeCrowd']}'.isNotEmpty)
+          'newFreeCrowd': context['newFreeCrowd'],
+      },
+    );
+    final raw = response['trackInfo'];
+    final track = xmlyMap(raw is String ? jsonDecode(raw) : raw);
+    final album = xmlyMap(response['albumInfo']);
+    return {
+      ...track,
+      if (track['albumId'] == null) 'albumId': album['albumId'],
+      if (album['freeListenStatus'] != null)
+        'freeListenStatus': album['freeListenStatus'],
+    };
+  }
+
+  Future<OfficialListeningBalance> decreaseSeconds(
+    int seconds, {
+    required int balanceBefore,
+    String trackId = '',
+  }) async {
+    AppLog.instance.trace(
+      "lib/api/xmly_browse_reward.dart::XmlyBrowseReward.decreaseSeconds",
+    );
+    final context = await _context();
+    final requestId = const Uuid().v4();
+    final sceneId = context['sceneId'] ?? 0;
+    final remaining = balanceBefore > seconds ? balanceBefore - seconds : 0;
+    final signature = md5.convert(
+      utf8.encode('$_deviceId&$seconds&$requestId&$sceneId&$_salt'),
+    );
+    final response = await client.request(
+      'POST',
+      XmlyClient.advertising,
+      '${_path}decreaseDuration/ts-${DateTime.now().millisecondsSinceEpoch}',
+      data: {
+        'requestId': requestId,
+        'openScreen': 0,
+        'duration': seconds,
+        'localDuration': remaining,
+        'sceneId': sceneId,
+        'groupId': context['groupId'] ?? 0,
+        if (trackId.isNotEmpty) 'trackId': xmlyIdentifier(trackId),
+        'isFreeListenTrack': true,
+        'isCountDownOpt': false,
+        'type': 1,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+        'signature': signature.toString(),
+        'newFreeCrowd': context['newFreeCrowd'],
+        'currentTempo': 1.0,
+        'ext': context['ext'],
+        'eventExt': '',
+      },
+    );
+    return OfficialListeningBalance.fromApi(
+      _data(response, 'decreaseDuration', requireSuccess: true),
     );
   }
 

@@ -210,7 +210,9 @@ class XmlyRewards {
         '${_path}rewardDuration/ts-${payload['ts']}',
         data: payload,
       );
-      return {'data': _result(response, mutation: true)};
+      final result = _result(response, mutation: true);
+      client.invalidateQuota();
+      return {'data': result};
     } catch (error, stack) {
       if (error is XmlyException && error.definitive) rethrow;
       final failure = const XmlyException('reward_result_unknown', '领取请求结果未知');

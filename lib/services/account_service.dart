@@ -56,6 +56,72 @@ class AccountService {
     return XmlyClient(credentials: credentials);
   }
 
+  void _bindSessionUpdates(XmlyClient client, {XmlyClient? owner}) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService._bindSessionUpdates',
+    );
+    client.onCredentialsChanged = (previous, renewed) async {
+      AppLog.instance.trace(
+        'lib/services/account_service.dart::AccountService._bindSessionUpdates.closure#1',
+      );
+      final account = owner ?? client;
+      final deviceId = account.credentials!.deviceId;
+      final before = Credentials(token: previous.token, deviceId: deviceId);
+      final after = Credentials(token: renewed.token, deviceId: deviceId);
+      await _saveRenewedCredentials(account, before, after);
+      if (owner != null && owner.credentials?.token == previous.token) {
+        await owner.adoptCredentials(after);
+      }
+    };
+  }
+
+  Future<void> _saveRenewedCredentials(
+    XmlyClient source,
+    Credentials previous,
+    Credentials renewed,
+  ) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService._saveRenewedCredentials',
+    );
+    return _credentialUpdates.synchronized(() async {
+      AppLog.instance.trace(
+        'lib/services/account_service.dart::AccountService._saveRenewedCredentials.closure#1',
+      );
+      if (!identical(_clients[previous.identity], source)) return;
+      for (final entry in _clients.entries.toList()) {
+        final current = entry.value.credentials!;
+        if (current.uid != previous.uid || current.token != previous.token) {
+          continue;
+        }
+        final record = (storage.state['accounts'] as Map)[entry.key] as Map?;
+        final ref = record?['credentialRef'] as String?;
+        if (ref == null) continue;
+        final updated = Credentials(
+          token: renewed.token,
+          deviceId: current.deviceId,
+        );
+        await secrets.write(ref, jsonEncode(updated.toJson()));
+        if (!identical(entry.value, source)) {
+          await entry.value.adoptCredentials(updated);
+        }
+      }
+      for (final client in _officialClients.values.toList()) {
+        final current = client.credentials!;
+        if (current.uid == previous.uid && current.token == previous.token) {
+          await client.adoptCredentials(
+            Credentials(token: renewed.token, deviceId: current.deviceId),
+          );
+        }
+      }
+      AppLog.instance.write(
+        AppLogLevel.info,
+        'account',
+        'Account session renewed and saved',
+        data: {'identity': previous.identity},
+      );
+    });
+  }
+
   // Account pages can be replaced during navigation or a window resize while
   // their login dialog remains open. Keep SMS state for the account session.
   final smsLogin = XmlyLogin();
@@ -69,8 +135,10 @@ class AccountService {
   /// Settle actual old-account usage; must throw if settlement is incomplete.
   final Future<void> Function()? settle;
   final Lock _accounts = Lock();
+  final Lock _credentialUpdates = Lock();
   final Lock _officialDevices = Lock();
   final Map<String, XmlyClient> _clients = {};
+  final Map<String, XmlyClient> _officialClients = {};
   final Map<String, XmlyClient> _settlementClients = {};
   final Map<String, Future<Quota>> _liteClaims = {};
   final Set<String> _missingCredentials = {};
@@ -125,21 +193,32 @@ class AccountService {
     );
     clientFor(identity);
     final value = deviceId.trim();
-    await _officialDevices.synchronized(() async {
-      if (value.isEmpty) {
-        await secrets.delete(_officialDeviceKey(identity));
-      } else {
-        await secrets.write(_officialDeviceKey(identity), value);
+    await _accounts.synchronized(() async {
+      AppLog.instance.trace(
+        'lib/services/account_service.dart::AccountService.setOfficialDeviceId.change',
+      );
+      try {
+        await _prepareChange();
+        await _officialDevices.synchronized(() async {
+          AppLog.instance.trace(
+            'lib/services/account_service.dart::AccountService.setOfficialDeviceId.save',
+          );
+          if (value.isEmpty) {
+            await secrets.delete(_officialDeviceKey(identity));
+          } else {
+            await secrets.write(_officialDeviceKey(identity), value);
+          }
+          _officialClients.remove(identity)?.close();
+        });
+      } finally {
+        _admissionPaused = false;
       }
     });
   }
 
-  Future<OfficialListeningBalance?> claimOfficialRewards(
-    String identity, {
-    bool Function()? shouldContinue,
-  }) async {
+  Future<XmlyClient> ensureOfficialClient(String identity) async {
     AppLog.instance.trace(
-      'lib/services/account_service.dart::AccountService.claimOfficialRewards',
+      'lib/services/account_service.dart::AccountService.ensureOfficialClient',
     );
     final deviceId = await officialDeviceId(identity);
     if (deviceId == null || deviceId.isEmpty) {
@@ -149,32 +228,124 @@ class AccountService {
         definitive: true,
       );
     }
-    final original = clientFor(identity).credentials!;
+    final owner = clientFor(identity);
+    final original = owner.credentials!;
+    final current = _officialClients[identity];
+    if (current?.credentials?.deviceId == deviceId &&
+        current?.credentials?.token == original.token)
+      return current!;
+    current?.close();
     final rewardClient = XmlyClient(
       credentials: Credentials(token: original.token, deviceId: deviceId),
-    );
-    final rewards = XmlyBrowseReward(rewardClient);
-    try {
-      return await rewardClient.withBalanceChange(() async {
+      mainApp: true,
+      trackReader: (client, number) {
         AppLog.instance.trace(
-          'lib/services/account_service.dart::AccountService.claimOfficialRewards.closure#1',
+          'lib/services/account_service.dart::AccountService.ensureOfficialClient.trackReader',
         );
-        for (var step = 0; step < 5; step++) {
-          if (shouldContinue?.call() == false) return null;
-          final offer = await rewards.load();
-          await Future<void>.delayed(offer.stay);
-          if (shouldContinue?.call() == false) return null;
-          final balance = await rewards.claim(offer);
-          if (offer.fields['rewardDurType'] == 22) return balance;
-        }
-        throw const XmlyException('reward_task_invalid', '听时任务结果待更新');
-      });
-    } finally {
-      rewardClient.close();
+        return XmlyBrowseReward(client).trackInfo(number);
+      },
+      quotaReader: (client) async {
+        AppLog.instance.trace(
+          'lib/services/account_service.dart::AccountService.ensureOfficialClient.quotaReader',
+        );
+        final balance = await XmlyBrowseReward(client).queryBalance();
+        return _officialQuota(balance);
+      },
+      usageReporter: (client, seconds, balanceBefore, trackId) async {
+        AppLog.instance.trace(
+          'lib/services/account_service.dart::AccountService.ensureOfficialClient.usageReporter',
+        );
+        final balance = await XmlyBrowseReward(client).decreaseSeconds(
+          seconds,
+          balanceBefore: balanceBefore,
+          trackId: trackId,
+        );
+        return _officialQuota(balance);
+      },
+    );
+    _bindSessionUpdates(rewardClient, owner: owner);
+    _officialClients[identity] = rewardClient;
+    return rewardClient;
+  }
+
+  static Quota _officialQuota(OfficialListeningBalance balance) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService._officialQuota',
+    );
+    return Quota(
+      remainingSeconds: balance.seconds,
+      newDevice: false,
+      checkedAt: DateTime.now(),
+      freeUntil: DateTime.fromMillisecondsSinceEpoch(balance.freeUntil),
+    );
+  }
+
+  XmlyClient officialClientFor(String identity) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.officialClientFor',
+    );
+    clientFor(identity);
+    final client = _officialClients[identity];
+    if (client == null) {
+      throw const XmlyException('reward_device_invalid', '请设置正式版设备 ID');
     }
+    return client;
+  }
+
+  bool officialClientMatches(String identity, XmlyClient client) {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.officialClientMatches',
+    );
+    return identical(_officialClients[identity], client) &&
+        client.credentials?.uid == clientFor(identity).credentials?.uid;
+  }
+
+  Future<OfficialListeningBalance?> claimOfficialRewards(
+    String identity, {
+    bool Function()? shouldContinue,
+  }) async {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.claimOfficialRewards',
+    );
+    final rewardClient = await ensureOfficialClient(identity);
+    final rewards = XmlyBrowseReward(rewardClient);
+    return await rewardClient.withBalanceChange(() async {
+      AppLog.instance.trace(
+        'lib/services/account_service.dart::AccountService.claimOfficialRewards.closure#1',
+      );
+      for (var step = 0; step < 5; step++) {
+        if (shouldContinue?.call() == false) return null;
+        final offer = await rewards.load();
+        await Future<void>.delayed(offer.stay);
+        if (shouldContinue?.call() == false) return null;
+        final balance = await rewards.claim(offer);
+        if (offer.fields['rewardDurType'] == 22) return balance;
+      }
+      throw const XmlyException('reward_task_invalid', '听时任务结果待更新');
+    });
   }
 
   bool liteClaiming(String identity) => _liteClaims.containsKey(identity);
+
+  Future<void> waitForLiteClaim(String identity) async {
+    AppLog.instance.trace(
+      'lib/services/account_service.dart::AccountService.waitForLiteClaim',
+    );
+    final claim = _liteClaims[identity];
+    if (claim == null) return;
+    try {
+      await claim;
+    } on XmlyException catch (error, stack) {
+      AppLog.instance.write(
+        AppLogLevel.warning,
+        'rewards',
+        'Listening reward finished with an error; querying current balance',
+        error: error,
+        stackTrace: stack,
+        promptUser: false,
+      );
+    }
+  }
 
   Future<Quota> claimLiteReward(
     String identity, {
@@ -189,9 +360,8 @@ class AccountService {
     late final Future<Quota> claim;
     claim = () async {
       try {
-        return await XmlyRewards(
-          client,
-        ).claimNext(shouldContinue: shouldContinue);
+        return await XmlyRewards(client)
+            .claimNext(shouldContinue: shouldContinue);
       } finally {
         if (identical(_liteClaims[identity], claim)) {
           _liteClaims.remove(identity);
@@ -405,8 +575,15 @@ class AccountService {
           _clients.addAll(restored);
           _missingCredentials.addAll(missing);
           _loaded = true;
+          for (final identity in restored.keys) {
+            final record = accounts[identity];
+            if (record is Map && _unsettled(record['officialLedger'])) {
+              await ensureOfficialClient(identity);
+            }
+          }
           await _cleanupSecrets();
           for (final client in restored.values) {
+            _bindSessionUpdates(client);
             await client.flushUrlCache();
           }
           AppLog.instance.write(
@@ -532,7 +709,7 @@ class AccountService {
             _scheduleCleanup(state, newRef!);
           });
           try {
-            final encoded = jsonEncode(credentials.toJson());
+            final encoded = jsonEncode(candidate.credentials!.toJson());
             await secrets.write(newRef, encoded);
             if (await secrets.read(newRef) != encoded) {
               throw const AccountException(
@@ -1117,6 +1294,7 @@ class AccountService {
             'Account logged out',
             data: {'identity': identity, 'primaryIdentity': primaryAccountId},
           );
+          _officialClients.remove(identity)?.close();
           final removed = _clients.remove(identity);
           _missingCredentials.remove(identity);
           if (removed != null) {
@@ -1139,6 +1317,7 @@ class AccountService {
       "lib/services/account_service.dart::AccountService._replaceClient",
     );
 
+    _officialClients.remove(candidate.identity)?.close();
     final old = _clients[candidate.identity];
     if (old != null) {
       old.close();
@@ -1152,6 +1331,7 @@ class AccountService {
     }
     candidate.attachUrlCache(_urlCacheDirectory);
     _clients[candidate.identity] = candidate;
+    _bindSessionUpdates(candidate);
     _missingCredentials.remove(candidate.identity);
   }
 
@@ -1450,6 +1630,10 @@ class AccountService {
           }
           if (!preserveState) await _cleanupSecrets();
           smsLogin.close();
+          for (final client in _officialClients.values) {
+            client.close();
+          }
+          _officialClients.clear();
           for (final client in _clients.values) {
             client.close();
           }

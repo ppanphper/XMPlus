@@ -42,7 +42,17 @@ class AppRuntime extends ChangeNotifier {
       settle: settle,
       quiesceForRestore: _quiesceForRestore,
     );
-    ledger = UsageLedger(storage: storage, clientFor: accounts.clientFor);
+    ledger = UsageLedger(
+      storage: storage,
+      clientFor: accounts.clientFor,
+      waitForReward: accounts.waitForLiteClaim,
+    );
+    officialLedger = UsageLedger(
+      storage: storage,
+      clientFor: accounts.officialClientFor,
+      ledgerField: 'officialLedger',
+      matchesAccount: accounts.officialClientMatches,
+    );
     settlementHandlers.add(() {
       AppLog.instance.trace(
         "lib/services/app_runtime.dart::AppRuntime.new.closure#1",
@@ -54,6 +64,20 @@ class AppRuntime extends ChangeNotifier {
         "lib/services/app_runtime.dart::AppRuntime.new.closure#2",
       );
       return closing ? ledger.settleForExit() : ledger.settle();
+    });
+    settlementHandlers.add(() {
+      AppLog.instance.trace(
+        'lib/services/app_runtime.dart::AppRuntime.new.stopOfficial',
+      );
+      return closing
+          ? officialLedger.captureForRestore()
+          : officialLedger.stopWatch();
+    });
+    settlementHandlers.add(() {
+      AppLog.instance.trace(
+        'lib/services/app_runtime.dart::AppRuntime.new.settleOfficial',
+      );
+      return closing ? officialLedger.settleForExit() : officialLedger.settle();
     });
     pipeline = MediaPipeline(accounts: accounts, anonymous: anonymous);
     downloads = DownloadService(
@@ -145,6 +169,7 @@ class AppRuntime extends ChangeNotifier {
       storage: storage,
       accounts: accounts,
       ledger: ledger,
+      officialLedger: officialLedger,
       downloads: downloads,
       pipeline: pipeline,
       anonymous: anonymous,
@@ -194,6 +219,7 @@ class AppRuntime extends ChangeNotifier {
   late final AlbumCache albumCache;
   late final AccountService accounts;
   late final UsageLedger ledger;
+  late final UsageLedger officialLedger;
   late final MediaPipeline pipeline;
   late final DownloadService downloads;
   late final AutoDownloadService autoDownloads;
@@ -311,6 +337,7 @@ class AppRuntime extends ChangeNotifier {
     await anonymous.flushUrlCache();
     await accounts.load();
     await ledger.load();
+    await officialLedger.load();
     await albumCache.load();
     albumCache.addListener(_albumCacheChanged);
     await downloads.load();
@@ -1004,6 +1031,7 @@ class AppRuntime extends ChangeNotifier {
             }),
           );
         await ledger.load();
+        await officialLedger.load();
         await player.reload();
         _restoreNeedsReload = false;
         lifecycleError = null;
@@ -1127,15 +1155,21 @@ class AppRuntime extends ChangeNotifier {
             restoreNeedsReload)
           break;
         try {
-          if (!ledger.hasDeferredUsage(identity)) continue;
-          await accounts.runWithAccount(identity, (_) {
-            AppLog.instance.trace(
-              "lib/services/app_runtime.dart::AppRuntime._syncUsage.closure#1",
-            );
-            return ledger.synchronize(identity);
-          });
+          if (ledger.hasDeferredUsage(identity))
+            await accounts.runWithAccount(identity, (_) {
+              AppLog.instance.trace(
+                "lib/services/app_runtime.dart::AppRuntime._syncUsage.closure#1",
+              );
+              return ledger.synchronize(identity);
+            });
         } catch (_) {
           // Preserve each original account's journal until it can synchronize.
+        }
+        if (officialLedger.hasDeferredUsage(identity)) {
+          try {
+            await accounts.ensureOfficialClient(identity);
+            await officialLedger.synchronize(identity);
+          } catch (_) {}
         }
       }
     } finally {
@@ -1157,6 +1191,7 @@ class AppRuntime extends ChangeNotifier {
       await player.quiesce(preserveUnknown: true);
       await downloads.pauseAll();
       await ledger.captureForRestore();
+      await officialLedger.captureForRestore();
     } finally {
       // The account mutex still blocks new admissions until restore finishes.
       if (!closing && !restoringBackup && !restoreNeedsReload)

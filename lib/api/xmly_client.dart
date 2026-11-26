@@ -19,6 +19,8 @@ class XmlyClient {
   static final Map<String, _BalanceChanges> _balanceChanges = {};
   static final _readPolicyKey = Object();
   static const mobile = 'https://mobile.ximalaya.com';
+  static const passport = 'https://passport.ximalaya.com';
+  static const _refreshTokenPath = '/user-http-app/v1/token/refresh';
   static const cachedAlbumOrigin = 'https://mobwsa.ximalaya.com';
   static const searchOrigin = 'https://www.ximalaya.com';
   static const pcOrigin = 'https://pc.ximalaya.com';
@@ -32,8 +34,40 @@ class XmlyClient {
   static const _maxResponse = 2 * 1024 * 1024;
   static const _qualities = ['m4a_128', 'm4a_64', 'mp3_64', 'mp3_32', 'm4a_24'];
   static const _maxUrlCacheFile = 16 * 1024 * 1024;
-  final Credentials? credentials;
+  Credentials? _credentials;
+  Credentials? get credentials {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient.credentials.get",
+    );
+    return _credentials;
+  }
+
+  Future<void> Function(Credentials previous, Credentials renewed)?
+  onCredentialsChanged;
+  final Lock _credentialChanges = Lock();
+  static final Map<String, Future<String?>> _tokenRefreshes = {};
+  Future<bool>? _tokenRefresh;
+  DateTime? _nextTokenRefresh;
   final String quality;
+  final bool mainApp;
+  final Future<Quota> Function(XmlyClient client)? quotaReader;
+  final Future<Map<String, dynamic>> Function(XmlyClient client, String number)?
+  trackReader;
+  final Future<Quota> Function(
+    XmlyClient client,
+    int seconds,
+    int balanceBefore,
+    String trackId,
+  )?
+  usageReporter;
+
+  bool quotaIsFree(Quota quota) {
+    AppLog.instance.trace('lib/api/xmly_client.dart::XmlyClient.quotaIsFree');
+    return mainApp
+        ? quota.freeUntil?.isAfter(DateTime.now()) == true
+        : quota.remainingSeconds > const Duration(hours: 20).inSeconds;
+  }
+
   final Dio _dio;
   final Completer<void> _closeSignal = Completer<void>();
   final Lock _resolveLock = Lock();
@@ -50,20 +84,28 @@ class XmlyClient {
   Future<void> _urlCacheWork = Future<void>.value();
   Future<void> _urlCacheReady = Future<void>.value();
   Quota? _quota;
+  Future<Quota>? _quotaQuery;
+  final Lock _activityLock = Lock();
   void invalidateQuota() {
     AppLog.instance.trace(
       "lib/api/xmly_client.dart::XmlyClient.invalidateQuota",
     );
 
     _quota = null;
+    _quotaQuery = null;
   }
 
   XmlyClient({
-    this.credentials,
+    Credentials? credentials,
     Dio? dio,
     this.quality = 'auto',
+    this.mainApp = false,
+    this.quotaReader,
+    this.trackReader,
+    this.usageReporter,
     String? urlCacheDirectory,
-  }) : _dio = dio ?? Dio() {
+  }) : _credentials = credentials,
+       _dio = dio ?? Dio() {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient.new");
 
     if (quality != 'auto' && !_qualities.contains(quality))
@@ -145,6 +187,143 @@ class XmlyClient {
     return credentials!;
   }
 
+  static List<int> _hiddenSessionResponse() {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient._hiddenSessionResponse",
+    );
+    return utf8.encode('Session credentials omitted');
+  }
+
+  Future<void> adoptCredentials(Credentials renewed) async {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient.adoptCredentials",
+    );
+    final current = credentials;
+    if (current == null || current.identity != renewed.identity) {
+      throw const XmlyException('account_mismatch', '请使用原账号续期登录');
+    }
+    if (current.token == renewed.token) return;
+    final cachePath = _urlCachePath;
+    await clearUrlCache();
+    _credentials = renewed;
+    _expired = false;
+    invalidateQuota();
+    if (cachePath != null) {
+      _urlCachePath = p.join(p.dirname(cachePath), 'urls.$cacheIdentity');
+    }
+  }
+
+  Future<bool> _acceptToken(Credentials sent, String token) {
+    AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._acceptToken");
+    return _credentialChanges.synchronized(() async {
+      AppLog.instance.trace(
+        "lib/api/xmly_client.dart::XmlyClient._acceptToken.closure#1",
+      );
+      if (_closed || credentials?.token != sent.token) return false;
+      final renewed = Credentials(token: token, deviceId: sent.deviceId);
+      if (renewed.uid != sent.uid) {
+        throw const XmlyException('account_mismatch', '登录续期返回的账号已变化');
+      }
+      if (renewed.token == sent.token) return false;
+      await onCredentialsChanged?.call(sent, renewed);
+      if (_closed || credentials?.token != sent.token) return false;
+      await adoptCredentials(renewed);
+      return true;
+    });
+  }
+
+  Future<void> _receiveLoginCookie(Headers headers, Credentials sent) async {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient._receiveLoginCookie",
+    );
+    for (final value
+        in headers[HttpHeaders.setCookieHeader] ?? const <String>[]) {
+      final Cookie cookie;
+      try {
+        cookie = Cookie.fromSetCookieValue(value);
+      } on FormatException {
+        continue;
+      }
+      if (cookie.name == '1&_token' &&
+          cookie.value.isNotEmpty &&
+          (cookie.maxAge == null || cookie.maxAge! > 0)) {
+        await _acceptToken(sent, cookie.value);
+      }
+    }
+  }
+
+  Future<bool> refreshSession({bool force = false}) {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient.refreshSession",
+    );
+    final current = _tokenRefresh;
+    if (current != null) return current;
+    final sent = credentials;
+    if (sent == null ||
+        (!force &&
+            _nextTokenRefresh?.isAfter(DateTime.now()) == true &&
+            !_tokenRefreshes.containsKey(sent.token))) {
+      return Future.value(false);
+    }
+    late final Future<bool> refresh;
+    refresh = _refreshSessionOnce(sent).whenComplete(() {
+      AppLog.instance.trace(
+        "lib/api/xmly_client.dart::XmlyClient.refreshSession.closure#1",
+      );
+      if (identical(_tokenRefresh, refresh)) _tokenRefresh = null;
+    });
+    _tokenRefresh = refresh;
+    return refresh;
+  }
+
+  Future<bool> _refreshSessionOnce(Credentials sent) async {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient._refreshSessionOnce",
+    );
+    _nextTokenRefresh = DateTime.now().add(const Duration(minutes: 5));
+    var pending = _tokenRefreshes[sent.token];
+    if (pending == null) {
+      late final Future<String?> shared;
+      shared = _fetchSessionToken(sent).whenComplete(() {
+        AppLog.instance.trace(
+          "lib/api/xmly_client.dart::XmlyClient._refreshSessionOnce.closure#1",
+        );
+        if (identical(_tokenRefreshes[sent.token], shared)) {
+          _tokenRefreshes.remove(sent.token);
+        }
+      });
+      _tokenRefreshes[sent.token] = shared;
+      pending = shared;
+    }
+    final token = await pending;
+    if (token != null) await _acceptToken(sent, token);
+    _nextTokenRefresh = DateTime.now().add(const Duration(hours: 24));
+    return credentials?.token != sent.token;
+  }
+
+  Future<String?> _fetchSessionToken(Credentials sent) async {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient._fetchSessionToken",
+    );
+    final response = await request(
+      'POST',
+      passport,
+      _refreshTokenPath,
+      form: true,
+    );
+    final data = xmlyMap(response['data']);
+    if (credentials?.token != sent.token) return credentials?.token;
+    if (data['refreshable'] == true) {
+      final oldToken = data['oldToken'];
+      final newToken = data['newToken'];
+      final rawToken = sent.token.substring(sent.token.indexOf('&') + 1);
+      if (oldToken == rawToken && newToken is String && newToken.isNotEmpty) {
+        return '${sent.uid}&$newToken';
+      }
+    }
+    return null;
+  }
+
   static bool _playpageEndpoint(String method, String origin, String path) {
     AppLog.instance.trace(
       'lib/api/xmly_client.dart::XmlyClient._playpageEndpoint',
@@ -154,6 +333,19 @@ class XmlyClient {
         RegExp(
           r'^/fmobile-track/fmobile/track/playpage/[1-9][0-9]{0,18}/ts-[0-9]+$',
         ).hasMatch(path);
+  }
+
+  static bool _officialTrackEndpoint(
+    String method,
+    String origin,
+    String path,
+  ) {
+    AppLog.instance.trace(
+      'lib/api/xmly_client.dart::XmlyClient._officialTrackEndpoint',
+    );
+    return method == 'GET' &&
+        origin == mobile &&
+        RegExp(r'^/mobile-playpage/track/v3/baseInfo/[0-9]+$').hasMatch(path);
   }
 
   static bool _albumOverviewEndpoint(
@@ -181,6 +373,9 @@ class XmlyClient {
   static bool _endpoint(String method, String origin, String path) {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._endpoint");
 
+    if (origin == passport) {
+      return method == 'POST' && path == _refreshTokenPath;
+    }
     if (origin == advertising) {
       return (method == 'POST' && path == '/subapp/common') ||
           (method == 'POST' && path == '/adx/ad') ||
@@ -192,8 +387,9 @@ class XmlyClient {
                 r'^/incentive/ting/(?:durationConfig|currentDuration|recAlbumInfo)/ts-[0-9]+$',
               ).hasMatch(path)) ||
           (method == 'POST' &&
-              RegExp(r'^/incentive/ting/rewardDuration/ts-[0-9]+$')
-                  .hasMatch(path));
+              RegExp(
+                r'^/incentive/ting/(?:rewardDuration|decreaseDuration)/ts-[0-9]+$',
+              ).hasMatch(path));
     }
     if (origin == cachedAlbumOrigin)
       return method == 'GET' && path == '/nyx/v1/history/query/android';
@@ -271,10 +467,10 @@ class XmlyClient {
               '/lite-mobile/like/v1/user-likes',
             ].contains(path) ||
             _playpageEndpoint(method, origin, path) ||
+            _officialTrackEndpoint(method, origin, path) ||
             _albumOverviewEndpoint(method, origin, path) ||
             RegExp(r'^/mobile/track/[1-9][0-9]{0,18}$').hasMatch(path) ||
-            RegExp(r'^/mobile/v1/album/track/v3/ts-[0-9]+$')
-                .hasMatch(path) ||
+            RegExp(r'^/mobile/v1/album/track/v3/ts-[0-9]+$').hasMatch(path) ||
             RegExp(
               r'^/album-mobile/album/similar/querySimilarAlbumList/ts-[0-9]+$',
             ).hasMatch(path) ||
@@ -338,6 +534,21 @@ class XmlyClient {
       'rate_limited',
       '请求过于频繁，请在 ${delay.inSeconds + (delay.inMilliseconds % 1000 == 0 ? 0 : 1)} 秒后重试',
       retryAfter: delay,
+      definitive: true,
+    );
+  }
+
+  Never _authenticationFailure(Credentials? sent) {
+    AppLog.instance.trace(
+      "lib/api/xmly_client.dart::XmlyClient._authenticationFailure",
+    );
+    if (sent != null && credentials?.token != sent.token) {
+      throw const XmlyException('session_changed', '登录已续期，正在更新请求');
+    }
+    if (sent != null) _expire();
+    throw const XmlyException(
+      'login_expired',
+      '登录信息已失效，请重新登录',
       definitive: true,
     );
   }
@@ -517,6 +728,7 @@ class XmlyClient {
                     '/fans/follow',
                   }.contains(path)) ||
               _playpageEndpoint(method, origin, path) ||
+              _officialTrackEndpoint(method, origin, path) ||
               _albumOverviewEndpoint(method, origin, path)))
         throw const XmlyException(
           'invalid_endpoint',
@@ -524,7 +736,26 @@ class XmlyClient {
           definitive: true,
         );
       final authenticated = account && credentials != null;
-      if (authenticated) _requireAccount();
+      final tokenRefresh = origin == passport && path == _refreshTokenPath;
+      if (authenticated && !tokenRefresh && onCredentialsChanged != null) {
+        try {
+          await _readAttempt(
+            refreshSession(),
+            CancelToken(),
+            Zone.current[_readPolicyKey] as _ReadPolicy?,
+          );
+        } on XmlyException catch (error, stack) {
+          AppLog.instance.write(
+            AppLogLevel.warning,
+            'account',
+            'Session refresh failed; continuing with saved credentials',
+            error: error,
+            stackTrace: stack,
+            promptUser: false,
+          );
+        }
+      }
+      if (authenticated && !tokenRefresh) _requireAccount();
       if (signed && !authenticated)
         throw const XmlyException(
           'login_required',
@@ -544,6 +775,7 @@ class XmlyClient {
           ? Zone.current[_readPolicyKey] as _ReadPolicy?
           : null;
       var failures = 0, rateRetries = 0;
+      var refreshedAfterExpiry = false;
       while (true) {
         await _checkRead(policy);
         Duration? rateDelay;
@@ -643,6 +875,26 @@ class XmlyClient {
             throw failure;
           }
         } on XmlyException catch (error) {
+          if (error.code == 'session_changed' &&
+              readOnly &&
+              !refreshedAfterExpiry) {
+            refreshedAfterExpiry = true;
+            continue;
+          }
+          if (error.code == 'login_expired' &&
+              readOnly &&
+              authenticated &&
+              !tokenRefresh &&
+              !refreshedAfterExpiry &&
+              onCredentialsChanged != null) {
+            refreshedAfterExpiry = true;
+            if (await _readAttempt(
+              refreshSession(force: true),
+              CancelToken(),
+              policy,
+            ))
+              continue;
+          }
           if (_closed || policy?.stopped == true) diagnostic.cancelled(error);
           if (!readOnly || externallyRetried || error.code != 'rate_limited')
             rethrow;
@@ -679,6 +931,7 @@ class XmlyClient {
   ) async {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._attempt");
 
+    final sentCredentials = credentials;
     const responseLimit = _maxResponse;
     late final limitError = XmlyException(
       'response_too_large',
@@ -686,7 +939,8 @@ class XmlyClient {
     );
     final mainListening =
         (origin == advertising && path != '/subapp/common') ||
-        (origin == mobile && path == '/mobile-album/album/replaceConfig');
+        (origin == mobile && path == '/mobile-album/album/replaceConfig') ||
+        (mainApp && (origin == mobile || origin == paidOrigin));
     final liteListening =
         (origin == advertising && path == '/subapp/common') ||
         (origin == welfare && path.startsWith('/lite-earn/ting/welfare/'));
@@ -709,7 +963,10 @@ class XmlyClient {
       if (signed)
         'x-tk': XmlyCrypto.freshTicket(
           credentials!,
-          attributes: _playpageEndpoint(method, origin, path)
+          mainApp: mainApp,
+          attributes: mainApp
+              ? 'b=playTrack&s=play&u=${credentials!.uid}'
+              : _playpageEndpoint(method, origin, path)
               ? 'b=lite&s=play&u=${credentials!.uid}'
               : null,
         ),
@@ -759,7 +1016,9 @@ class XmlyClient {
           : jsonEncode(data);
     };
     final bytes = BytesBuilder(copy: false);
-    diagnostic.responseBytes = bytes.toBytes;
+    diagnostic.responseBytes = origin == passport
+        ? _hiddenSessionResponse
+        : bytes.toBytes;
     try {
       diagnostic.started();
       final response = await _dio.fetch<ResponseBody>(options);
@@ -816,11 +1075,13 @@ class XmlyClient {
             origin,
             _retryAfter(response.headers.value('retry-after')),
           );
-        if (status == 401 || (status == 403 && authenticated)) {
-          if (authenticated) _expire();
+        if (status == 401) {
+          _authenticationFailure(authenticated ? sentCredentials : null);
+        }
+        if (status == 403) {
           throw const XmlyException(
-            'login_expired',
-            '登录信息已失效，请重新登录',
+            'permission_denied',
+            '本次请求暂无访问权限，请稍后重试',
             definitive: true,
           );
         }
@@ -837,9 +1098,11 @@ class XmlyClient {
         AppLog.instance.trace(
           "lib/api/xmly_client.dart::XmlyClient._attempt.closure#5",
         );
-        return responseBytes;
+        return origin == passport ? _hiddenSessionResponse() : responseBytes;
       };
-      diagnostic.succeeded();
+      if (authenticated && sentCredentials != null) {
+        await _receiveLoginCookie(response.headers, sentCredentials);
+      }
       Map<String, dynamic> payload;
       try {
         final decoded = jsonDecode(
@@ -853,6 +1116,23 @@ class XmlyClient {
         AppLog.instance.linkError(failure, error);
         throw failure;
       }
+      if (origin == passport && path == _refreshTokenPath) {
+        final sanitized = <String, dynamic>{
+          ...payload,
+          'data': {
+            ...xmlyMap(payload['data']),
+            'oldToken': '[REDACTED]',
+            'newToken': '[REDACTED]',
+          },
+        };
+        diagnostic.responseBytes = () {
+          AppLog.instance.trace(
+            "lib/api/xmly_client.dart::XmlyClient._attempt.closure#6",
+          );
+          return Uint8List.fromList(utf8.encode(jsonEncode(sanitized)));
+        };
+      }
+      diagnostic.succeeded();
       final libraryMutation =
           method == 'POST' &&
           origin == mobile &&
@@ -904,14 +1184,17 @@ class XmlyClient {
       if (code != successCode && !alreadyApplied) {
         diagnostic.apiRejected = true;
         try {
+          if (origin == mobile &&
+              path == '/lite-mobile/audi/func/v1/config' &&
+              code == '-101') {
+            throw const XmlyException(
+              'quota_query_repeated',
+              '听时查询正在处理中，请稍后重试',
+            );
+          }
           if (code == '429') _rateLimit(origin, const Duration(seconds: 30));
           if (code == '401') {
-            if (authenticated) _expire();
-            throw const XmlyException(
-              'login_expired',
-              '登录信息已失效，请重新登录',
-              definitive: true,
-            );
+            _authenticationFailure(authenticated ? sentCredentials : null);
           }
           if (origin == mobile && code == '924')
             throw const XmlyException(
@@ -968,6 +1251,7 @@ class XmlyClient {
                     'permission_denied',
                     'content_removed',
                     'rate_limited',
+                    'quota_query_repeated',
                   }.contains(error.code)),
         );
       }
@@ -1290,7 +1574,9 @@ class XmlyClient {
   }
 
   String _albumTrackPath(bool useV3) {
-    AppLog.instance.trace('lib/api/xmly_client.dart::XmlyClient._albumTrackPath');
+    AppLog.instance.trace(
+      'lib/api/xmly_client.dart::XmlyClient._albumTrackPath',
+    );
     return useV3
         ? '/mobile/v1/album/track/v3/ts-${DateTime.now().millisecondsSinceEpoch}'
         : _albumTracksPath;
@@ -1435,11 +1721,7 @@ class XmlyClient {
     // v3 can return an empty catalogue for unsupported album types. That does
     // not recover the legacy 924, so retain its unavailable-content result.
     if (useV3 && total == 0)
-      throw const XmlyException(
-        'content_removed',
-        '该内容已下架',
-        definitive: true,
-      );
+      throw const XmlyException('content_removed', '该内容已下架', definitive: true);
     final sparse =
         (data['list'] as List).length !=
         (total - (page - 1) * pageSize).clamp(0, pageSize);
@@ -1530,9 +1812,32 @@ class XmlyClient {
     );
   }
 
-  Future<Quota> _activity(String name, [int? seconds]) async {
+  Future<Quota> _activity(String name, [int? seconds]) {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._activity");
+    return _activityLock.synchronized(() async {
+      AppLog.instance.trace(
+        "lib/api/xmly_client.dart::XmlyClient._activity.closure#1",
+      );
+      for (var attempt = 0; ; attempt++) {
+        try {
+          return await _activityOnce(name, seconds);
+        } on XmlyException catch (error) {
+          if (name != 'config' ||
+              error.code != 'quota_query_repeated' ||
+              attempt >= 3) {
+            rethrow;
+          }
+          await _retryWait(
+            Duration(seconds: 1 << attempt),
+            Zone.current[_readPolicyKey] as _ReadPolicy?,
+          );
+        }
+      }
+    });
+  }
 
+  Future<Quota> _activityOnce(String name, int? seconds) async {
+    AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._activityOnce");
     final value = _requireAccount();
     final params = <String, String>{
       'deviceId': value.deviceId,
@@ -1552,7 +1857,7 @@ class XmlyClient {
     final data = xmlyMap(result['data']);
     String decode(String field) {
       AppLog.instance.trace(
-        "lib/api/xmly_client.dart::XmlyClient._activity.decode",
+        "lib/api/xmly_client.dart::XmlyClient._activityOnce.decode",
       );
 
       try {
@@ -1595,10 +1900,45 @@ class XmlyClient {
 
   Future<Quota> queryQuota() {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient.queryQuota");
-    return _activity('config');
+    final policy = Zone.current[_readPolicyKey] as _ReadPolicy?;
+    var query = _quotaQuery;
+    if (query == null) {
+      late final Future<Quota> shared;
+      shared =
+          runZoned(
+            () {
+              AppLog.instance.trace(
+                "lib/api/xmly_client.dart::XmlyClient.queryQuota.closure#1",
+              );
+              return quotaReader?.call(this) ?? _activity('config');
+            },
+            zoneValues: {
+              _readPolicyKey: policy == null
+                  ? null
+                  : _ReadPolicy(
+                      policy.rateLimitRetries,
+                      policy.minimumRateLimitDelay,
+                      null,
+                      null,
+                    ),
+            },
+          ).whenComplete(() {
+            AppLog.instance.trace(
+              "lib/api/xmly_client.dart::XmlyClient.queryQuota.closure#2",
+            );
+            if (identical(_quotaQuery, shared)) _quotaQuery = null;
+          });
+      _quotaQuery = shared;
+      query = shared;
+    }
+    return _readAttempt(query, CancelToken(), policy);
   }
 
-  Future<Quota> debitSeconds(int seconds) {
+  Future<Quota> debitSeconds(
+    int seconds, {
+    int? balanceBefore,
+    String trackId = '',
+  }) {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient.debitSeconds");
 
     if (seconds < 1 || seconds > 2147483647)
@@ -1607,12 +1947,16 @@ class XmlyClient {
         '听时必须为正整数秒',
         definitive: true,
       );
-    return _activity('report', seconds);
+    return usageReporter?.call(this, seconds, balanceBefore!, trackId) ??
+        _activity('report', seconds);
   }
 
   Future<Map<String, dynamic>> _info(String number, [Quota? reward]) async {
     AppLog.instance.trace("lib/api/xmly_client.dart::XmlyClient._info");
 
+    if (accountAvailable && trackReader != null) {
+      return trackReader!(this, number);
+    }
     if (accountAvailable) {
       final params = <String, dynamic>{'device': 'android', 'trackId': number};
       if (reward != null)
@@ -2319,9 +2663,11 @@ class XmlyClient {
 
         if (mediaAuthRetries < 0 || mediaAuthRetries > 3)
           throw const XmlyException('invalid_retry', '音频授权重试次数无效');
+        var sessionRetries = 0;
         for (var attempt = 0; ; attempt++) {
           if (isActive != null && !isActive())
             throw const XmlyException('cache_source_changed', '音频来源已变化');
+          final token = credentials?.token;
           try {
             return await _resolveOnce(
               trackId,
@@ -2330,6 +2676,13 @@ class XmlyClient {
               quality: quality,
             );
           } on XmlyException catch (error) {
+            final sessionChanged =
+                error.code == 'cache_source_changed' &&
+                credentials?.token != token;
+            if (sessionChanged && sessionRetries++ == 0) {
+              attempt--;
+              continue;
+            }
             if (externallyRetried ||
                 error.code != 'media_unauthorized' ||
                 attempt >= mediaAuthRetries)
@@ -2366,6 +2719,7 @@ class XmlyClient {
         }
         final number = xmlyIdentifier(trackId);
         final epoch = _urlEpoch;
+        final token = credentials?.token;
         await _urlCacheReady;
         if (_closed || !accountAvailable || epoch != _urlEpoch) return null;
         for (final candidateQuality
@@ -2385,7 +2739,10 @@ class XmlyClient {
           try {
             audio = await _resolvedAudio(entry, track, true);
           } on XmlyException catch (error) {
-            if (error.code == 'media_unauthorized') return null;
+            if (error.code == 'media_unauthorized' ||
+                (error.code == 'cache_source_changed' &&
+                    credentials?.token != token))
+              return null;
             rethrow;
           }
           if (_closed ||
@@ -2456,7 +2813,9 @@ class XmlyClient {
         if (entry.requiresReward!) {
           _requireAccount();
           final quota = await queryQuota();
-          if (!quota.newDevice && quota.remainingSeconds <= 0)
+          if (!quota.newDevice &&
+              !quotaIsFree(quota) &&
+              quota.remainingSeconds <= 0)
             throw const XmlyException(
               'insufficient_quota',
               '听时不足，请前往官方 App 获取听时',
@@ -2479,11 +2838,14 @@ class XmlyClient {
     var info = await _info(number);
     _matchingId(info, number);
     Quota? reward;
-    if ((info['isPaid'] ?? info['is_paid']) != false &&
-        info['isAuthorized'] != true) {
+    if (((info['isPaid'] ?? info['is_paid']) != false &&
+            info['isAuthorized'] != true) ||
+        (mainApp && '${info['permissionSource']}' == '107')) {
       _requireAccount();
       reward = await queryQuota();
-      if (!reward.newDevice && reward.remainingSeconds <= 0)
+      if (!reward.newDevice &&
+          !quotaIsFree(reward) &&
+          reward.remainingSeconds <= 0)
         throw const XmlyException(
           'insufficient_quota',
           '听时不足，请前往官方 App 获取听时',

@@ -107,17 +107,31 @@ class UsageLedger {
   UsageLedger({
     required this.storage,
     required this.clientFor,
+    this.waitForReward,
+    this.ledgerField = 'ledger',
+    bool Function(String identity, XmlyClient client)? matchesAccount,
     Duration Function()? monotonic,
     DateTime Function()? clock,
   }) : _monotonic = monotonic ?? _elapsedClock(),
-       _clock = clock ?? DateTime.now {
+       _clock = clock ?? DateTime.now,
+       _matchesAccount = matchesAccount ?? _defaultAccountMatch {
     AppLog.instance.trace("lib/services/usage_ledger.dart::UsageLedger.new");
   }
 
   static const maxSeconds = 2147483647;
   static const reportFactor = 1.0;
+  final String ledgerField;
+  final bool Function(String identity, XmlyClient client) _matchesAccount;
+  static bool _defaultAccountMatch(String identity, XmlyClient client) {
+    AppLog.instance.trace(
+      'lib/services/usage_ledger.dart::UsageLedger._defaultAccountMatch',
+    );
+    return client.identity == identity;
+  }
+
   final AppStorage storage;
   final XmlyClient Function(String identity) clientFor;
+  final Future<void> Function(String identity)? waitForReward;
   final Duration Function() _monotonic;
   final DateTime Function() _clock;
   final Map<String, Lock> _locks = {};
@@ -196,7 +210,7 @@ class UsageLedger {
     if (account is! Map) {
       throw const XmlyException('missing_account', '请先登录原账号');
     }
-    final ledger = account['ledger'];
+    final ledger = account[ledgerField];
     if (ledger != null && ledger is! Map<String, dynamic>) {
       throw const XmlyException('invalid_ledger', '扣时资料损坏，请保留资料');
     }
@@ -223,7 +237,7 @@ class UsageLedger {
       if (account is! Map) {
         throw const XmlyException('missing_account', '请先登录原账号');
       }
-      final ledger = account.putIfAbsent('ledger', () {
+      final ledger = account.putIfAbsent(ledgerField, () {
         AppLog.instance.trace(
           "lib/services/usage_ledger.dart::UsageLedger._write.closure#1.closure#1",
         );
@@ -342,7 +356,7 @@ class UsageLedger {
         cancelled: cancelled.future,
       );
       if (!identical(client, clientFor(identity)) ||
-          client.identity != identity) {
+          !_matchesAccount(identity, client)) {
         throw const XmlyException('account_mismatch', '请求账号已改变，请重新操作');
       }
       _quotas[identity] = quota;
@@ -363,7 +377,7 @@ class UsageLedger {
     );
     final quota = _quotas[identity];
     if (quota != null &&
-        !(quota.newDevice && quota.remainingSeconds == 0) &&
+        !_unlimited(identity, quota) &&
         quota.remainingSeconds - debt(identity) <= 0)
       throw _insufficient;
   }
@@ -371,7 +385,7 @@ class UsageLedger {
   Future<void> _guard(String identity) async {
     AppLog.instance.trace("lib/services/usage_ledger.dart::UsageLedger._guard");
 
-    if (clientFor(identity).identity != identity) {
+    if (!_matchesAccount(identity, clientFor(identity))) {
       throw const XmlyException('account_mismatch', '请求账号已改变，请重新操作');
     }
     if (isBlocked(identity)) await _refreshPending(identity);
@@ -440,7 +454,7 @@ class UsageLedger {
       );
 
       final client = clientFor(identity);
-      if (client.identity != identity) {
+      if (!_matchesAccount(identity, client)) {
         throw const XmlyException('account_mismatch', '请使用原账号核对听时');
       }
       if (isBlocked(identity)) return _refreshPending(identity);
@@ -589,6 +603,24 @@ class UsageLedger {
     return value.toDouble();
   }
 
+  bool _unlimited(String identity, Quota quota) {
+    AppLog.instance.trace(
+      'lib/services/usage_ledger.dart::UsageLedger._unlimited',
+    );
+    return (quota.newDevice && quota.remainingSeconds == 0) ||
+        clientFor(identity).quotaIsFree(quota);
+  }
+
+  double? availableSeconds(String identity) {
+    AppLog.instance.trace(
+      'lib/services/usage_ledger.dart::UsageLedger.availableSeconds',
+    );
+    final quota = _quotas[identity];
+    if (quota == null) return null;
+    if (_unlimited(identity, quota)) return double.infinity;
+    return quota.remainingSeconds - debt(identity);
+  }
+
   /// Starts paused. Only actual playback state events may enable metering.
   Future<void> startWatch({
     required String identity,
@@ -609,6 +641,7 @@ class UsageLedger {
       final normalized = 'xmly:${xmlyIdentifier(trackId)}';
       await _stopWatch();
       if (!requiresReward || prepaid || identity == 'anonymous') return;
+      await waitForReward?.call(identity);
       await _lock(identity).synchronized(() async {
         AppLog.instance.trace(
           "lib/services/usage_ledger.dart::UsageLedger.startWatch.closure#1.closure#1",
@@ -617,7 +650,7 @@ class UsageLedger {
         await _recover(identity);
         await _guard(identity);
         final quota = await _queryQuota(identity);
-        final newDevice = quota.newDevice && quota.remainingSeconds == 0;
+        final newDevice = _unlimited(identity, quota);
         if (!newDevice && quota.remainingSeconds - debt(identity) <= 0) {
           throw _insufficient;
         }
@@ -711,7 +744,11 @@ class UsageLedger {
             if (playing &&
                 (_retryAt.containsKey(watch.identity) ||
                     isBlocked(watch.identity))) {
-              _checkAvailableUsage(watch.identity);
+              if ((availableSeconds(watch.identity) ?? 1) <= 0) {
+                await _guard(watch.identity);
+              } else {
+                _checkAvailableUsage(watch.identity);
+              }
             }
             if (!playing ||
                 _monotonic() - watch.settledAt >=
@@ -735,9 +772,20 @@ class UsageLedger {
     );
 
     final now = _monotonic();
-    final elapsed = now > watch.sampledAt
+    var elapsed = now > watch.sampledAt
         ? (now - watch.sampledAt).inMicroseconds / 1000000
         : 0.0;
+    final quota = _quotas[watch.identity];
+    if (quota != null) {
+      final client = clientFor(watch.identity);
+      if (client.mainApp && quota.freeUntil != null) {
+        final paidElapsed =
+            _clock().difference(quota.freeUntil!).inMicroseconds / 1000000;
+        elapsed = elapsed.clamp(0, paidElapsed.clamp(0, double.infinity));
+      } else if (client.quotaIsFree(quota)) {
+        elapsed = 0;
+      }
+    }
     watch.unsaved += watch.playing ? elapsed * watch.speed * reportFactor : 0;
     watch.sampledAt = now;
   }
@@ -767,7 +815,13 @@ class UsageLedger {
       if (watch.unsaved == 0) return;
       final amount = watch.unsaved;
       try {
-        final total = debt(identity) + amount;
+        final quota = _quotas[identity];
+        var total = debt(identity) + amount;
+        if (quota != null &&
+            !isBlocked(identity) &&
+            !_unlimited(identity, quota)) {
+          total = total.clamp(0, quota.remainingSeconds.toDouble());
+        }
         await _write(identity, (ledger) {
           AppLog.instance.trace(
             "lib/services/usage_ledger.dart::UsageLedger._sample.closure#1.closure#1",
@@ -892,18 +946,28 @@ class UsageLedger {
         debt(identity) < 1 &&
         watch?.identity != identity)
       return;
+    await waitForReward?.call(identity);
     await _guard(identity);
     var seconds = debt(identity).floor();
     while (seconds > 0) {
-      final amount = seconds > maxSeconds ? maxSeconds : seconds;
+      var amount = seconds > maxSeconds ? maxSeconds : seconds;
       await clientFor(identity).withBalanceChange(() async {
         AppLog.instance.trace(
           "lib/services/usage_ledger.dart::UsageLedger._settleLocked.closure#1",
         );
 
         final quota = await _queryQuota(identity);
-        final newDevice = quota.newDevice && quota.remainingSeconds == 0;
-        if (!newDevice && quota.remainingSeconds < amount) throw _insufficient;
+        final newDevice = _unlimited(identity, quota);
+        if (!newDevice && debt(identity) > quota.remainingSeconds) {
+          await _write(identity, (ledger) {
+            AppLog.instance.trace(
+              'lib/services/usage_ledger.dart::UsageLedger._settleLocked.limitToBalance',
+            );
+            ledger['usage_seconds'] = quota.remainingSeconds.toDouble();
+          });
+          amount = quota.remainingSeconds;
+        }
+        if (amount == 0) return;
         final operation = <String, dynamic>{
           'operationId': const Uuid().v4(),
           'accountIdentity': identity,
@@ -976,15 +1040,22 @@ class UsageLedger {
         }
       });
       final balanceBefore = operation['balanceBefore'] as int;
-      // 一天限免时余额超过 20 小时，扣时接口不可用。
-      final freeDay = balanceBefore > const Duration(hours: 20).inSeconds;
+      final client = clientFor(identity);
+      final quota = _quotas[identity];
+      final freeDay = quota != null && client.quotaIsFree(quota);
       final int balanceAfter;
       try {
-        balanceAfter = freeDay
-            ? balanceBefore
-            : (await clientFor(identity)
-                      .debitSeconds(operation['seconds'] as int))
-                  .remainingSeconds;
+        if (freeDay) {
+          balanceAfter = balanceBefore;
+        } else {
+          final result = await client.debitSeconds(
+            operation['seconds'] as int,
+            balanceBefore: balanceBefore,
+            trackId: operation['trackId'] as String,
+          );
+          balanceAfter = result.remainingSeconds;
+          _quotas[identity] = result;
+        }
       } catch (error, stack) {
         _recordFailure(error, stack, identity);
         if (error is XmlyException && error.definitive) {
@@ -1017,6 +1088,7 @@ class UsageLedger {
         remainingSeconds: balanceAfter,
         newDevice: _quotas[identity]?.newDevice ?? false,
         checkedAt: _clock(),
+        freeUntil: _quotas[identity]?.freeUntil,
       );
       try {
         await _finish(
@@ -1134,12 +1206,12 @@ class UsageLedger {
     }
     final entries = receipts(identity);
     final client = clientFor(identity);
-    if (client.identity != identity) {
+    if (!_matchesAccount(identity, client)) {
       throw const XmlyException('account_mismatch', '请求账号已改变，请重新操作');
     }
     final quota = await _queryQuota(identity);
     if (!identical(client, clientFor(identity)) ||
-        client.identity != identity) {
+        !_matchesAccount(identity, client)) {
       throw const XmlyException('account_mismatch', '请求账号已改变，请重新操作');
     }
     if (pending is Map) {

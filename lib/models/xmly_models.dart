@@ -99,6 +99,8 @@ Map<String, dynamic> _publicRaw(Map<String, dynamic> raw) {
     'isPaid',
     'is_paid',
     'isAuthorized',
+    'permissionSource',
+    'freeListenStatus',
     'is_authorized',
     'is_free',
     'sample_duration',
@@ -669,6 +671,7 @@ class PlaybackQueue {
 }
 
 class Quota {
+  final DateTime? freeUntil;
   final int remainingSeconds;
   final bool newDevice;
   final DateTime checkedAt;
@@ -676,6 +679,7 @@ class Quota {
     required this.remainingSeconds,
     required this.newDevice,
     required this.checkedAt,
+    this.freeUntil,
   }) {
     AppLog.instance.trace("lib/models/xmly_models.dart::Quota.new");
 
