@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 
 import '../common/widgets/app_scrollbar.dart';
@@ -239,11 +240,12 @@ class ListeningPage extends StatefulWidget {
 }
 
 class _ListeningPageState extends State<ListeningPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final _search = TextEditingController();
   late final TabController _tabs;
   int _selectedTab = 0;
   Timer? _favoriteSearchTimer;
+  Timer? _midnightTimer;
   bool _favoriteSearchPaused = false;
   final _busy = [false, false, false, false];
   final List<String?> _errors = [null, null, null, null];
@@ -255,6 +257,23 @@ class _ListeningPageState extends State<ListeningPage>
   late String _accountKey;
   final _sources = <String, _ListeningAccount>{};
   final List<Completer<void>?> _cancelled = [null, null, null, null];
+
+  // Each slot keeps only its latest inputs. Account lists are replaced on load.
+  final _derived = <String, ({List<Object?> inputs, Object? value})>{};
+
+  T _memo<T>(String key, List<Object?> inputs, T Function() compute) {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState._memo",
+    );
+
+    final cached = _derived[key];
+    if (cached != null && listEquals(cached.inputs, inputs)) {
+      return cached.value as T;
+    }
+    final value = compute();
+    _derived[key] = (inputs: inputs, value: value);
+    return value;
+  }
 
   List<T> _merge<T>(
     Iterable<T> items,
@@ -291,24 +310,34 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._updates.get",
     );
 
+    return _memo('updates', [
+      for (final s in _sources.values) ...[s.key, s.identity, s.updates],
+    ], _mergeUpdates);
+  }
+
+  List<UpdateItem> _mergeUpdates() {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState._mergeUpdates",
+    );
+
     return _merge(
       _sources.values.expand((source) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._updates.get.closure#1",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeUpdates.closure#1",
         );
 
         return source.updates;
       }),
       (item) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._updates.get.closure#2",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeUpdates.closure#2",
         );
 
         return item.track.id;
       },
       timestamp: (item) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._updates.get.closure#3",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeUpdates.closure#3",
         );
 
         return item.publishedAt;
@@ -321,24 +350,34 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._subscriptions.get",
     );
 
+    return _memo('subscriptions', [
+      for (final s in _sources.values) ...[s.key, s.identity, s.subscriptions],
+    ], _mergeSubscriptions);
+  }
+
+  List<SubscriptionItem> _mergeSubscriptions() {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState._mergeSubscriptions",
+    );
+
     return _merge(
       _sources.values.expand((source) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._subscriptions.get.closure#1",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeSubscriptions.closure#1",
         );
 
         return source.subscriptions;
       }),
       (item) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._subscriptions.get.closure#2",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeSubscriptions.closure#2",
         );
 
         return item.album.id;
       },
       timestamp: (item) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._subscriptions.get.closure#3",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeSubscriptions.closure#3",
         );
 
         return item.updatedAt;
@@ -351,17 +390,27 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._favorites.get",
     );
 
+    return _memo('favorites', [
+      for (final s in _sources.values) ...[s.key, s.identity, s.favorites],
+    ], _mergeFavorites);
+  }
+
+  List<Track> _mergeFavorites() {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState._mergeFavorites",
+    );
+
     return _merge(
       _sources.values.expand((source) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._favorites.get.closure#1",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeFavorites.closure#1",
         );
 
         return source.favorites;
       }),
       (item) {
         AppLog.instance.trace(
-          "lib/pages/listening_page.dart::_ListeningPageState._favorites.get.closure#2",
+          "lib/pages/listening_page.dart::_ListeningPageState._mergeFavorites.closure#2",
         );
 
         return item.id;
@@ -581,7 +630,48 @@ class _ListeningPageState extends State<ListeningPage>
     _libraryRevision = _runtime.libraryRevision;
     _accountAvailable = _signedIn;
     _runtime.addListener(_runtimeChanged);
+    WidgetsBinding.instance.addObserver(this);
+    _scheduleMidnightRefresh();
     _refresh();
+  }
+
+  void _scheduleMidnightRefresh() {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState._scheduleMidnightRefresh",
+    );
+
+    final now = DateTime.now();
+    final next = DateTime(now.year, now.month, now.day + 1, 0, 0, 1);
+    _midnightTimer = Timer(next.difference(now), () {
+      AppLog.instance.trace(
+        "lib/pages/listening_page.dart::_ListeningPageState._scheduleMidnightRefresh.closure#1",
+      );
+
+      if (!mounted) return;
+      setState(() {
+        AppLog.instance.trace(
+          "lib/pages/listening_page.dart::_ListeningPageState._scheduleMidnightRefresh.closure#1.closure#1",
+        );
+      });
+      _scheduleMidnightRefresh();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState.didChangeAppLifecycleState",
+    );
+
+    if (state != AppLifecycleState.resumed || !mounted) return;
+    // The clock or time zone may have changed while the app was away.
+    _midnightTimer?.cancel();
+    _scheduleMidnightRefresh();
+    setState(() {
+      AppLog.instance.trace(
+        "lib/pages/listening_page.dart::_ListeningPageState.didChangeAppLifecycleState.closure#1",
+      );
+    });
   }
 
   @override
@@ -1311,6 +1401,17 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._history",
     );
 
+    return _memo('history', [
+      _query,
+      for (final s in _sources.values) ...[s.key, s.identity, s.history],
+    ], _computeHistory);
+  }
+
+  List<_ListeningRecord> _computeHistory() {
+    AppLog.instance.trace(
+      "lib/pages/listening_page.dart::_ListeningPageState._computeHistory",
+    );
+
     final records = <String, _ListeningRecord>{};
     for (final raw in _cloudHistory) {
       final track = Track.fromApi({
@@ -1334,26 +1435,24 @@ class _ListeningPageState extends State<ListeningPage>
     }
     return records.values.where((row) {
       AppLog.instance.trace(
-        "lib/pages/listening_page.dart::_ListeningPageState._history.closure#1",
+        "lib/pages/listening_page.dart::_ListeningPageState._computeHistory.closure#1",
       );
       return _matches(row.track);
     }).toList()..sort((a, b) {
       AppLog.instance.trace(
-        "lib/pages/listening_page.dart::_ListeningPageState._history.closure#2",
+        "lib/pages/listening_page.dart::_ListeningPageState._computeHistory.closure#2",
       );
       return b.updatedAt.compareTo(a.updatedAt);
     });
   }
 
-  String _day(int timestamp) {
+  String _day(int timestamp, DateTime today) {
     AppLog.instance.trace(
       "lib/pages/listening_page.dart::_ListeningPageState._day",
     );
 
     if (timestamp <= 0) return '更早';
     final date = DateTime.fromMillisecondsSinceEpoch(timestamp).toLocal();
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
     final day = DateTime(date.year, date.month, date.day);
     if (day == today) return '今天';
     if (day == DateTime(today.year, today.month, today.day - 1)) return '昨天';
@@ -1577,6 +1676,7 @@ class _ListeningPageState extends State<ListeningPage>
     List<T> items,
     int Function(T) timestamp,
     Widget Function(T) tile, {
+    String? rowsKey,
     Widget? footer,
     List<Widget> headers = const [],
     String emptyMessage = '暂无记录',
@@ -1585,16 +1685,29 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._dated",
     );
 
-    final rows = <Object>[];
-    String? previous;
-    for (final item in items) {
-      final day = _day(timestamp(item));
-      if (day != previous) {
-        rows.add(day);
-        previous = day;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    List<Object> groupRows() {
+      AppLog.instance.trace(
+        "lib/pages/listening_page.dart::_ListeningPageState._dated.groupRows",
+      );
+
+      final rows = <Object>[];
+      String? previous;
+      for (final item in items) {
+        final day = _day(timestamp(item), today);
+        if (day != previous) {
+          rows.add(day);
+          previous = day;
+        }
+        rows.add(item as Object);
       }
-      rows.add(item as Object);
+      return rows;
     }
+
+    final rows = rowsKey == null
+        ? groupRows()
+        : _memo(rowsKey, [items, today], groupRows);
     return AppScrollbar(
       child: CustomScrollView(
         slivers: [
@@ -1664,8 +1777,13 @@ class _ListeningPageState extends State<ListeningPage>
             "lib/pages/listening_page.dart::_ListeningPageState._subscriptionStrip.closure#2",
           );
 
-          final item = _subscriptions[index];
-          final identity = _owners(1, item.album.id).first.identity;
+          // A refresh can shrink the list before this lazy row is rebuilt.
+          final subscriptions = _subscriptions;
+          if (index >= subscriptions.length) return const SizedBox.shrink();
+          final item = subscriptions[index];
+          final owner = _owners(1, item.album.id).firstOrNull;
+          if (owner == null) return const SizedBox.shrink();
+          final identity = owner.identity;
           return SizedBox(
             width: 72,
             child: InkWell(
@@ -1697,13 +1815,21 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._updatesTab",
     );
 
-    final visible = _updates.where((row) {
+    final updates = _updates;
+    final subscriptions = _subscriptions;
+    final visible = _memo('updates.filtered', [updates, _query], () {
       AppLog.instance.trace(
         "lib/pages/listening_page.dart::_ListeningPageState._updatesTab.closure#1",
       );
 
-      return _matches(row.track);
-    }).toList();
+      return updates.where((row) {
+        AppLog.instance.trace(
+          "lib/pages/listening_page.dart::_ListeningPageState._updatesTab.closure#1.closure#1",
+        );
+
+        return _matches(row.track);
+      }).toList();
+    });
     return _dated<UpdateItem>(
       visible,
       (row) {
@@ -1752,8 +1878,9 @@ class _ListeningPageState extends State<ListeningPage>
           },
         );
       },
+      rowsKey: 'updates.rows',
       headers: [
-        if (_subscriptions.isNotEmpty) _subscriptionStrip(),
+        if (subscriptions.isNotEmpty) _subscriptionStrip(),
         _sectionState(0, () {
           AppLog.instance.trace(
             "lib/pages/listening_page.dart::_ListeningPageState._updatesTab.closure#4",
@@ -1761,7 +1888,7 @@ class _ListeningPageState extends State<ListeningPage>
 
           _loadUpdates(reset: true);
         }),
-        if (_subscriptions.isEmpty)
+        if (subscriptions.isEmpty)
           _sectionState(1, () {
             AppLog.instance.trace(
               "lib/pages/listening_page.dart::_ListeningPageState._updatesTab.closure#5",
@@ -1797,16 +1924,23 @@ class _ListeningPageState extends State<ListeningPage>
     );
 
     final epoch = _accountEpoch, key = _currentKey;
-    final items = _subscriptions.where((row) {
+    final subscriptions = _subscriptions;
+    final items = _memo('subscriptions.filtered', [subscriptions, _query], () {
       AppLog.instance.trace(
         "lib/pages/listening_page.dart::_ListeningPageState._subscriptionsTab.closure#1",
       );
 
-      return _query.isEmpty ||
-          '${row.album.title} ${row.latestTitle} ${row.album.artist}'
-              .toLowerCase()
-              .contains(_query);
-    }).toList();
+      return subscriptions.where((row) {
+        AppLog.instance.trace(
+          "lib/pages/listening_page.dart::_ListeningPageState._subscriptionsTab.closure#1.closure#1",
+        );
+
+        return _query.isEmpty ||
+            '${row.album.title} ${row.latestTitle} ${row.album.artist}'
+                .toLowerCase()
+                .contains(_query);
+      }).toList();
+    });
     return _dated<SubscriptionItem>(
       items,
       (row) {
@@ -1914,6 +2048,7 @@ class _ListeningPageState extends State<ListeningPage>
           },
         );
       },
+      rowsKey: 'subscriptions.rows',
       headers: [
         _sectionState(1, () {
           AppLog.instance.trace(
@@ -1986,6 +2121,7 @@ class _ListeningPageState extends State<ListeningPage>
           },
         );
       },
+      rowsKey: 'history.rows',
       headers: [_sectionState(2, _loadHistory)],
       emptyMessage: !_signedIn
           ? '登录后查看云历史记录'
@@ -2000,13 +2136,20 @@ class _ListeningPageState extends State<ListeningPage>
       "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab",
     );
 
-    final items = _favorites.where(_matches).toList();
+    final favorites = _favorites;
+    final items = _memo('favorites.filtered', [favorites, _query], () {
+      AppLog.instance.trace(
+        "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#1",
+      );
+
+      return favorites.where(_matches).toList();
+    });
     return AppScrollbar(
       child: ListView.builder(
         itemCount: items.length + 2 + (_moreFavorites ? 1 : 0),
         itemBuilder: (_, index) {
           AppLog.instance.trace(
-            "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#1",
+            "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#2",
           );
 
           if (index == 0)
@@ -2014,7 +2157,7 @@ class _ListeningPageState extends State<ListeningPage>
               children: [
                 _sectionState(3, () {
                   AppLog.instance.trace(
-                    "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#1.closure#1",
+                    "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#2.closure#1",
                   );
 
                   _loadFavorites(reset: true);
@@ -2048,12 +2191,12 @@ class _ListeningPageState extends State<ListeningPage>
             accountText: _ownerLabel(owners),
             play: () {
               AppLog.instance.trace(
-                "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#1.closure#2",
+                "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#2.closure#2",
               );
 
               _act(() {
                 AppLog.instance.trace(
-                  "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#1.closure#2.closure#1",
+                  "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#2.closure#2.closure#1",
                 );
 
                 return track.albumId.isEmpty
@@ -2072,7 +2215,7 @@ class _ListeningPageState extends State<ListeningPage>
             removeLabel: '取消收藏',
             remove: () {
               AppLog.instance.trace(
-                "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#1.closure#3",
+                "lib/pages/listening_page.dart::_ListeningPageState._favoritesTab.closure#2.closure#3",
               );
 
               _removeFavorite(track, owners);
@@ -2416,6 +2559,7 @@ class _ListeningPageState extends State<ListeningPage>
     );
 
     ++_accountEpoch;
+    _midnightTimer?.cancel();
     _favoriteSearchTimer?.cancel();
     for (final cancelled in _cancelled) {
       cancelled?.complete();
@@ -2423,6 +2567,7 @@ class _ListeningPageState extends State<ListeningPage>
     _tabs.removeListener(_searchTabChanged);
     _tabs.dispose();
     _runtime.removeListener(_runtimeChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _search.dispose();
     super.dispose();
   }

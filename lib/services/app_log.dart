@@ -29,6 +29,8 @@ class AppLog {
   static const fileBytesLimit = 8 * 1024 * 1024;
   static const fileTailBytes = 4 * 1024 * 1024;
   static const recordBytesLimit = 256 * 1024;
+  static const traceRepeatWindow = Duration(seconds: 1);
+  static const traceSummaryLimit = 20;
   static const cookieReplacement = '[REDACTED COOKIE]';
   static final _ownedName = RegExp(
     r'^XMPlus-(\d+)-(\d+)-([A-Za-z0-9_-]+)\.log$',
@@ -56,6 +58,9 @@ class AppLog {
   Future<void>? _initializing;
   Future<void> _work = Future<void>.value();
   Timer? _timer;
+  final _traceClock = Stopwatch()..start();
+  final _lastTraceMicros = <String, int>{};
+  final _traceRepeats = <String, int>{};
   final _pending = ListQueue<_LogLine>();
   int _pendingBytes = 0, _sequence = 0, _committedLength = 0;
   int _sequenceRebase = 0;
@@ -80,6 +85,7 @@ class AppLog {
   AppLogLevel get level => _level;
   set level(AppLogLevel value) {
     _level = value;
+    if (value != AppLogLevel.debug) _traceRepeats.clear();
     _notify();
   }
 
@@ -204,6 +210,7 @@ class AppLog {
     }
     _initialized = true;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _writeTraceSummary();
       if (_pending.isNotEmpty || _persistenceError != null) _scheduleFlush();
     });
     final initial = _initialTrace;
@@ -393,7 +400,33 @@ class AppLog {
       return;
     }
     if (_level != AppLogLevel.debug) return;
+    final now = _traceClock.elapsedMicroseconds;
+    final last = _lastTraceMicros[method];
+    if (last != null && now - last < traceRepeatWindow.inMicroseconds) {
+      _traceRepeats[method] = (_traceRepeats[method] ?? 0) + 1;
+      return;
+    }
     write(AppLogLevel.debug, 'method', method);
+    _lastTraceMicros[method] = now;
+  }
+
+  void _writeTraceSummary() {
+    if (_traceRepeats.isEmpty) return;
+    final ranked = _traceRepeats.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    write(AppLogLevel.debug, 'method', '方法追踪重复调用已合并', data: {
+      'windowMs': traceRepeatWindow.inMilliseconds,
+      'repeats': {
+        for (final entry in ranked.take(traceSummaryLimit)) entry.key: entry.value,
+      },
+      if (ranked.length > traceSummaryLimit) ...{
+        'otherMethods': ranked.length - traceSummaryLimit,
+        'otherRepeats': ranked.skip(traceSummaryLimit).fold<int>(
+          0, (sum, entry) => sum + entry.value,
+        ),
+      },
+    });
+    _traceRepeats.clear();
   }
 
   void write(
@@ -788,6 +821,8 @@ class AppLog {
   /// Deletes earlier sessions and empties the current one. Records written
   /// after the call stay; open snapshots keep their frozen copies.
   Future<void> clear() {
+    // Folded counts describe calls before the clear; give them a sequence now.
+    _writeTraceSummary();
     var cutoff = _sequence - 1;
     final rebase = _sequenceRebase;
     return _serialize(() async {
@@ -881,6 +916,7 @@ class AppLog {
         ArgumentError.value(fileName, 'fileName', 'Not an owned log basename'),
       );
     }
+    if (fileName == currentFileName) _writeTraceSummary();
     final cutoff = _sequence - 1;
     final rebase = _sequenceRebase;
     return _serialize(() async {
@@ -1051,6 +1087,7 @@ class AppLog {
 
   Future<void> close() async {
     if (_closed) return;
+    _writeTraceSummary();
     _closed = true;
     _timer?.cancel();
     await flush();

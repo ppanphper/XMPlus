@@ -3246,6 +3246,7 @@ class PlayerService {
     );
 
     if (_closed) return;
+    final oldStatus = status, oldError = error;
     final sleep = policy.pollSleep();
     if (sleep != null) {
       await _sleep(sleep);
@@ -3259,7 +3260,13 @@ class PlayerService {
         await _saveProgress();
       }
     }
-    _notify();
+    if (playing ||
+        buffering ||
+        policy.sleepRequest != null ||
+        status != oldStatus ||
+        error != oldError) {
+      _notify();
+    }
   }
 
   Future<bool> _switchWalletIfNeeded() async {
