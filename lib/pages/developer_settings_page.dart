@@ -296,6 +296,97 @@ class _DeveloperSettingsPageState extends State<DeveloperSettingsPage> {
     });
   }
 
+  Future<void> _clear() {
+    AppLog.instance.trace(
+      "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear",
+    );
+    return _log.runWithErrorScope(() async {
+      AppLog.instance.trace(
+        "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1",
+      );
+
+      if (_busy || !_canContinueExport()) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) {
+          AppLog.instance.trace(
+            "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1.closure#1",
+          );
+          return AlertDialog(
+            title: const Text('清空日志？'),
+            content: const Text('全部日志将被删除，无法恢复。'),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  AppLog.instance.trace(
+                    "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1.closure#1.closure#1",
+                  );
+                  Navigator.pop(context, false);
+                },
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  AppLog.instance.trace(
+                    "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1.closure#1.closure#2",
+                  );
+                  Navigator.pop(context, true);
+                },
+                child: const Text('清空'),
+              ),
+            ],
+          );
+        },
+      );
+      if (confirmed != true || _busy || !_canContinueExport()) return;
+      setState(() {
+        AppLog.instance.trace(
+          "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1.closure#2",
+        );
+
+        _busy = true;
+        _error = null;
+      });
+      Object? failure;
+      try {
+        await _log.clear();
+      } catch (error, stack) {
+        failure = error;
+        if (!_log.errorWasRecorded(error)) {
+          _log.write(
+            AppLogLevel.warning,
+            'log_export',
+            'Clearing logs failed',
+            error: error,
+            stackTrace: stack,
+            promptUser: false,
+          );
+        }
+      } finally {
+        if (mounted)
+          setState(() {
+            AppLog.instance.trace(
+              "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1.closure#3",
+            );
+            _busy = false;
+          });
+      }
+      if (!mounted) return;
+      await _refresh();
+      if (!_canContinueExport()) return;
+      if (failure == null) {
+        _message('日志已清空');
+      } else {
+        setState(() {
+          AppLog.instance.trace(
+            "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._clear.closure#1.closure#4",
+          );
+          _error = '清空日志失败：$failure';
+        });
+      }
+    });
+  }
+
   void _message(String message) {
     AppLog.instance.trace(
       "lib/pages/developer_settings_page.dart::_DeveloperSettingsPageState._message",
@@ -478,6 +569,13 @@ class _DeveloperSettingsPageState extends State<DeveloperSettingsPage> {
                               onPressed: _busy ? null : _refresh,
                               icon: const Icon(Icons.refresh),
                               label: const Text('刷新'),
+                            ),
+                            TextButton.icon(
+                              onPressed: _busy || _sessions.isEmpty
+                                  ? null
+                                  : _clear,
+                              icon: const Icon(Icons.delete_outline),
+                              label: const Text('清空日志'),
                             ),
                           ],
                         ),

@@ -785,6 +785,61 @@ class AppLog {
     return List.unmodifiable(result.take(7));
   });
 
+  /// Deletes earlier sessions and empties the current one. Records written
+  /// after the call stay; open snapshots keep their frozen copies.
+  Future<void> clear() {
+    var cutoff = _sequence - 1;
+    final rebase = _sequenceRebase;
+    return _serialize(() async {
+      cutoff += _sequenceRebase - rebase;
+      if (!_prepared) {
+        final before = _sequenceRebase;
+        await _prepareFile();
+        cutoff += _sequenceRebase - before;
+      }
+      await _checkRoot();
+      final file = _file;
+      if (file == null) throw const FileSystemException('日志会话尚未初始化');
+      Object? failure;
+      for (final session in await _listSessions()) {
+        final path = session.path;
+        if (path == null || session.fileName == _fileName) continue;
+        try {
+          // Never follow a link substituted since enumeration.
+          if (await FileSystemEntity.type(path, followLinks: false) ==
+              FileSystemEntityType.file)
+            await File(path).delete();
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+      await _cleanTemporaryFiles();
+      final type = await FileSystemEntity.type(file.path, followLinks: false);
+      if (type == FileSystemEntityType.file) {
+        final handle = await file.open(mode: FileMode.append);
+        try {
+          await handle.truncate(0);
+        } finally {
+          await handle.close();
+        }
+      } else if (type != FileSystemEntityType.notFound) {
+        throw const FileSystemException('日志文件不能是链接或目录');
+      }
+      _committedLength = 0;
+      while (_pending.isNotEmpty && _pending.first.sequence <= cutoff) {
+        _pendingBytes -= _pending.removeFirst().bytes.length;
+      }
+      if (_missingLastSequence != null && _missingLastSequence! <= cutoff) {
+        _missingRecords = _missingBytes = 0;
+        _missingFirstSequence = _missingLastSequence = null;
+      }
+      _lostRecords = _lostBytes = 0;
+      write(AppLogLevel.info, 'logging', '日志已清空');
+      _notify();
+      if (failure != null) throw failure;
+    });
+  }
+
   Future<List<LogSession>> _listSessions() async {
     final root = _root;
     if (root == null || !await root.exists()) return [];
