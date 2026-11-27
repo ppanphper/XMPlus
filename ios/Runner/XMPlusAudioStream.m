@@ -60,13 +60,9 @@ typedef int (*XMAddStream)(void *, const char *, void *, XMOpen);
             [self.condition unlock];
         }];
     });
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:120];
-    while (!finished && !self.cancelled) {
-        if (![self.condition waitUntilDate:deadline]) break;
-    }
+    while (!finished && !self.cancelled) [self.condition wait];
     NSDictionary *value = !self.cancelled && finished ? response : nil;
     [self.condition unlock];
-    if (!finished) [self cancel];
     return value;
 }
 - (void)cancel {

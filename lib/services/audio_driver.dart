@@ -277,7 +277,7 @@ class MediaKitAudioDriver implements AudioDriver {
       },
       error: error,
       stackTrace: stack,
-      promptUser: true,
+      promptUser: false,
     );
     _emit();
   }

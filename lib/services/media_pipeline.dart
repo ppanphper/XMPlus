@@ -65,6 +65,9 @@ class MediaPipeline {
       return;
     }
     _leases.remove(taskId);
+    // A player may have restarted production after a failed attempt. Without
+    // a reader or download control, nothing owns that producer any more.
+    if (!_controls.containsKey(taskId)) await _caches[taskId]?.pause();
     if (_finished.contains(taskId)) await _discardFinished(taskId);
   }
 
@@ -333,12 +336,11 @@ class MediaPipeline {
         rethrow;
       } finally {
         try {
-          // A retained completed cache may still be draining to the player.
-          if (!completed ||
-              control.paused ||
+          // A player can drain a completed cache or restart a failed producer.
+          if (control.paused ||
               control.cancelled ||
-              !cache.complete ||
-              !_leases.containsKey(task.id)) {
+              !_leases.containsKey(task.id) ||
+              (!failed && (!completed || !cache.complete))) {
             await cache.pause();
           }
           _controls.remove(task.id);

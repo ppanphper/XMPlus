@@ -17,6 +17,18 @@ import 'ios_platform.dart';
 import 'network_retry.dart';
 import 'http_log_attempt.dart';
 
+bool isAudioNetworkFailure(Object? error) {
+  AppLog.instance.trace("lib/services/audio_cache.dart::isAudioNetworkFailure");
+  return error is SocketException ||
+      error is TimeoutException ||
+      error is HttpException ||
+      error is TlsException ||
+      error is XmlyException &&
+          const {'network', 'network_error', 'rate_limited'}.contains(
+            error.code,
+          );
+}
+
 /// The sole upstream byte producer for one account/track/task directory.
 /// URLs and caller identity headers never enter the on-disk index.
 class AudioCache {
@@ -39,6 +51,8 @@ class AudioCache {
   Future<void>? _running;
   Completer<void>? _interruptedWait;
   int _producerEpoch = 0;
+  int _playbackAttachments = 0;
+  Completer<void>? _attached;
   Object? _failure;
   bool _failureReported = false;
   StackTrace? _failureStack;
@@ -132,6 +146,86 @@ class AudioCache {
         rethrow;
       }
     });
+  }
+
+  void attachPlayback() {
+    AppLog.instance.trace(
+      "lib/services/audio_cache.dart::AudioCache.attachPlayback",
+    );
+    ++_playbackAttachments;
+    final attached = _attached;
+    if (attached != null && !attached.isCompleted) attached.complete();
+  }
+
+  void detachPlayback() {
+    AppLog.instance.trace(
+      "lib/services/audio_cache.dart::AudioCache.detachPlayback",
+    );
+    if (_playbackAttachments > 0) --_playbackAttachments;
+  }
+
+  bool get playbackAttached {
+    AppLog.instance.trace(
+      "lib/services/audio_cache.dart::AudioCache.playbackAttached.get",
+    );
+    return _playbackAttachments > 0;
+  }
+
+  bool get closed {
+    AppLog.instance.trace(
+      "lib/services/audio_cache.dart::AudioCache.closed.get",
+    );
+    return _closed;
+  }
+
+  bool _quietFailure(Object error) {
+    AppLog.instance.trace(
+      "lib/services/audio_cache.dart::AudioCache._quietFailure",
+    );
+    return playbackAttached &&
+        isAudioNetworkFailure(
+          error is _AudioTransportFailure ? error.error : error,
+        );
+  }
+
+  /// A system transfer may be deferred indefinitely once playback waits on it.
+  /// When a player attaches first, abandon it without a failure: the caller
+  /// requests the same range again over HttpClient, outside any retry budget.
+  Future<HttpClientResponse?> _unlessAttached(
+    String id,
+    Future<HttpClientResponse> transfer,
+  ) async {
+    AppLog.instance.trace(
+      "lib/services/audio_cache.dart::AudioCache._unlessAttached",
+    );
+    // One signal per request: a shared one would retain a listener per block.
+    final attached = _attached = Completer<void>();
+    final HttpClientResponse? result;
+    try {
+      result = await Future.any<HttpClientResponse?>([
+        transfer,
+        attached.future.then((_) {
+          AppLog.instance.trace(
+            "lib/services/audio_cache.dart::AudioCache._unlessAttached.closure#1",
+          );
+          return null;
+        }),
+      ]);
+    } finally {
+      if (identical(_attached, attached)) _attached = null;
+    }
+    if (result != null) return result;
+    // The abandoned body is never opened, so native cleanup cannot race a read.
+    transfer.ignore();
+    if (_iosRequestId == id) _iosRequestId = null;
+    unawaited(
+      IosPlatform.cancelDownload(id).catchError((Object _) {
+        AppLog.instance.trace(
+          "lib/services/audio_cache.dart::AudioCache._unlessAttached.closure#2",
+        );
+      }),
+    );
+    return null;
   }
 
   String get accountIdentity {
@@ -501,10 +595,15 @@ class AudioCache {
                   'media_unauthorized',
                   'rate_limited',
                 }.contains(error.code));
+        final quiet = _quietFailure(error);
         final reported =
             !_closed &&
             !_paused &&
-            HttpLogOperation.reportFailure(error, stack, promptUser: !expected);
+            HttpLogOperation.reportFailure(
+              error,
+              stack,
+              promptUser: !expected && !quiet,
+            );
         if (!expected && !reported) {
           if (!AppLog.instance.errorWasRecorded(error)) {
             AppLog.instance.write(
@@ -513,9 +612,9 @@ class AudioCache {
               'Audio cache production failed',
               error: error,
               stackTrace: stack,
-              promptUser: true,
+              promptUser: !quiet,
             );
-          } else {
+          } else if (!quiet) {
             AppLog.instance.requestUploadPrompt();
           }
         }
@@ -661,6 +760,7 @@ class AudioCache {
             error is _AudioTransportFailure ? error.error : error,
             error is _AudioTransportFailure ? error.stack : stack,
             promptUser:
+                !_quietFailure(error) &&
                 !(error is XmlyException &&
                     const {
                       'media_unauthorized',
@@ -883,17 +983,18 @@ class AudioCache {
       }
       _checkProducer(epoch);
       late HttpClientResponse response;
-      if (Platform.isIOS) {
+      HttpClientResponse? background;
+      if (Platform.isIOS && !playbackAttached) {
         final id = sha256
             .convert(utf8.encode('$directory|$uri|$start|$end|$validator'))
             .toString();
         _iosRequestId = id;
         try {
-          response = await _whileActive(epoch, () {
+          background = await _whileActive(epoch, () {
             AppLog.instance.trace(
               "lib/services/audio_cache.dart::AudioCache._request.closure#1",
             );
-            return _transport(() {
+            return _unlessAttached(id, _transport(() {
               AppLog.instance.trace(
                 "lib/services/audio_cache.dart::AudioCache._request.closure#1.closure#1",
               );
@@ -903,12 +1004,15 @@ class AudioCache {
                 headers: diagnostic.requestHeaders,
                 validateFinalUri: _validateUri,
               );
-            });
+            }));
           });
           _checkProducer(epoch);
         } finally {
           if (_iosRequestId == id) _iosRequestId = null;
         }
+      }
+      if (background != null) {
+        response = background;
       } else {
         _client ??= HttpClient()
           ..connectionTimeout = const Duration(seconds: 10)

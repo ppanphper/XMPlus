@@ -95,6 +95,7 @@ class PlayerService {
         "lib/services/player_service.dart::PlayerService.new.closure#1",
       );
 
+      final request = _request;
       final seekRevision = _seekRevision, advanceIntent = _advanceIntent;
       final recorded =
           !_closed &&
@@ -124,12 +125,13 @@ class PlayerService {
           );
           return _observe(
             snapshot,
+            request: request,
             seekRevision: seekRevision,
             advanceIntent: advanceIntent,
             stateAlreadyRecorded: recorded,
           );
         });
-      }, recordedFailure: snapshot.failureRecorded ? snapshot.failure : null);
+      }, snapshot: snapshot);
     });
     _downloadEvents = downloads.changes.listen((_) {
       AppLog.instance.trace(
@@ -275,6 +277,7 @@ class PlayerService {
   int _seekRevision = 0;
   int? _cloudResumeEpoch;
   int _playbackRecoveryRevision = 0;
+  final _recoveryTimes = <DateTime>[];
 
   Stream<void> get changes {
     AppLog.instance.trace(
@@ -497,7 +500,7 @@ class PlayerService {
     );
   }
 
-  void _background(Future<void> Function() action, {Object? recordedFailure}) {
+  void _background(Future<void> Function() action, {AudioSnapshot? snapshot}) {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._background",
     );
@@ -513,8 +516,11 @@ class PlayerService {
           await action();
         } catch (failure, stack) {
           if (failure is DownloadStopped || _closed) return;
-          if (!identical(failure, recordedFailure)) {
-            _recordFailure(failure, stack);
+          final fromSnapshot =
+              snapshot != null && identical(failure, snapshot.failure);
+          if (!fromSnapshot || !snapshot.failureRecorded) {
+            // _observe already decided whether this snapshot warrants a prompt.
+            _recordFailure(failure, stack, promptUser: !fromSnapshot);
           }
           error = _message(failure);
           // Recovery must not replace the fault that stopped playback.
@@ -530,7 +536,11 @@ class PlayerService {
     );
   }
 
-  void _recordFailure(Object failure, StackTrace stack) {
+  void _recordFailure(
+    Object failure,
+    StackTrace stack, {
+    bool promptUser = true,
+  }) {
     AppLog.instance.trace(
       "lib/services/player_service.dart::PlayerService._recordFailure",
     );
@@ -560,7 +570,9 @@ class PlayerService {
               'queue_changed',
             }.contains(failure.code);
     if (expected) return;
-    AppLog.instance.requestUploadPrompt();
+    // Connectivity faults are user-environment conditions, not bug reports.
+    promptUser = promptUser && !isAudioNetworkFailure(failure);
+    if (promptUser) AppLog.instance.requestUploadPrompt();
     if (AppLog.instance.errorWasRecorded(failure)) return;
     AppLog.instance.write(
       AppLogLevel.error,
@@ -574,7 +586,7 @@ class PlayerService {
       },
       error: failure,
       stackTrace: stack,
-      promptUser: true,
+      promptUser: promptUser,
     );
   }
 
@@ -731,6 +743,7 @@ class PlayerService {
         state['queue'] = restored.toJson();
       });
     }
+    final previousTrackId = current?.id;
     _queue = restored.tracks;
     _queueAccountIdentities = restored.accountIdentities;
     cursor = restored.cursor;
@@ -748,6 +761,7 @@ class PlayerService {
     _sleepStopped = false;
     duration = current?.duration ?? 0;
     final track = current;
+    if (previousTrackId != track?.id) _recoveryTimes.clear();
     final progress = track == null ? null : _latestQueueProgress(track);
     _restoredTrackId = progress == null ? null : track!.id;
     _restoredPosition = progress?.position;
@@ -878,6 +892,8 @@ class PlayerService {
       );
       state['queue'] = next.toJson();
     });
+    final nextTrackId = index < 0 ? null : tracks[index].id;
+    if (current?.id != nextTrackId) _recoveryTimes.clear();
     _queueAccountIdentities = next.accountIdentities;
     queueSource = next.source;
     albumPage = next.albumPage;
@@ -2994,8 +3010,96 @@ class PlayerService {
     );
   }
 
+  int? _reserveRecovery(Object? failure) {
+    AppLog.instance.trace(
+      "lib/services/player_service.dart::PlayerService._reserveRecovery",
+    );
+    if (_source?.kind == 'local' || _manualPaused || _sleepStopping || _atEnd) {
+      return null;
+    }
+    final recoverable = failure is XmlyException
+        ? const {
+            'audio_decode_failed',
+            'cache_source_changed',
+            'cache_range',
+            'cache_closed',
+            'network',
+            'network_error',
+            'media_unauthorized',
+          }.contains(failure.code)
+        : isAudioNetworkFailure(failure);
+    if (!recoverable) return null;
+    final now = _clock(), cutoff = now.subtract(const Duration(seconds: 120));
+    _recoveryTimes.removeWhere((time) {
+      AppLog.instance.trace(
+        "lib/services/player_service.dart::PlayerService._reserveRecovery.closure#1",
+      );
+      return time.isBefore(cutoff);
+    });
+    if (_recoveryTimes.length >= 3) return null;
+    _recoveryTimes.add(now);
+    return _recoveryTimes.length;
+  }
+
+  Future<void> _recoverPlayback(int attempt, Object failure) async {
+    AppLog.instance.trace(
+      "lib/services/player_service.dart::PlayerService._recoverPlayback",
+    );
+    final request = _newRequest(keepStartPosition: true);
+    final epoch = _epoch, resume = position;
+    buffering = true;
+    error = null;
+    _playbackLedger.recordPlaybackState(
+      playing: false,
+      buffering: true,
+      speed: rate,
+    );
+    AppLog.instance.write(
+      AppLogLevel.info,
+      'player',
+      'Playback recovering',
+      data: {
+        'trackId': current?.id,
+        'epoch': epoch,
+        'attempt': attempt,
+        'position': resume,
+        'code': failure is XmlyException
+            ? failure.code
+            : failure.runtimeType.toString(),
+      },
+    );
+    await _playbackLedger.observe(
+      playing: false,
+      buffering: true,
+      speed: rate,
+      stateAlreadyRecorded: true,
+    );
+    _notify();
+    _background(() async {
+      AppLog.instance.trace(
+        "lib/services/player_service.dart::PlayerService._recoverPlayback.closure#1",
+      );
+      final delay = Duration(seconds: const [1, 3, 8][attempt - 1]);
+      await Future<void>.delayed(delay);
+      await _commands.synchronized(() async {
+        AppLog.instance.trace(
+          "lib/services/player_service.dart::PlayerService._recoverPlayback.closure#1.closure#1",
+        );
+        if (_closed || request != _request || epoch != _epoch || _manualPaused) {
+          return;
+        }
+        await _openCurrent(
+          request,
+          resumePosition: position,
+          manualReplay: _manualChapterPosition,
+        );
+      });
+    });
+  }
+
   Future<void> _observe(
     AudioSnapshot snapshot, {
+    required int request,
     required int seekRevision,
     required int advanceIntent,
     bool stateAlreadyRecorded = false,
@@ -3007,6 +3111,12 @@ class PlayerService {
     if (_closed || _source == null || snapshot.epoch != _epoch) return;
     if (snapshot.error != null) {
       final failure = snapshot.failure;
+      final attempt = request == _request ? _reserveRecovery(failure) : null;
+      if (attempt != null) {
+        await _recoverPlayback(attempt, failure!);
+        return;
+      }
+      if (!isAudioNetworkFailure(failure)) AppLog.instance.requestUploadPrompt();
       if (failure != null) {
         Error.throwWithStackTrace(
           failure,
@@ -4282,8 +4392,10 @@ class PlayerService {
       _notify();
       return;
     }
+    // A failed attempt leaves its cache readable; the mounted reader keeps
+    // retrying, so playback resumes when the network does.
     if (task.state == DownloadState.paused ||
-        task.state == DownloadState.failed) {
+        task.state == DownloadState.failed && _source?.cache == null) {
       await _driver.pause();
       _setPlaying(false);
       await _playbackLedger.observe(
