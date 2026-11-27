@@ -2362,7 +2362,7 @@ class PlayerService {
       await officialLedger.synchronize(identity);
       audio = await accounts.runWithAccount(identity, (_) {
         AppLog.instance.trace(
-          'lib/services/player_service.dart::PlayerService._prepare.resolveOfficial',
+          'lib/services/player_service.dart::PlayerService._prepare.closure#2',
         );
         return resolve(officialClient!);
       });
@@ -2389,12 +2389,12 @@ class PlayerService {
       audio: audio,
       refresh: (isActive) {
         AppLog.instance.trace(
-          "lib/services/player_service.dart::PlayerService._prepare.closure#2",
+          "lib/services/player_service.dart::PlayerService._prepare.closure#3",
         );
 
         Future<ResolvedAudio> refresh(XmlyClient client) {
           AppLog.instance.trace(
-            "lib/services/player_service.dart::PlayerService._prepare.closure#2.refresh",
+            "lib/services/player_service.dart::PlayerService._prepare.closure#3.refresh",
           );
 
           // Pause/resume can supersede the opening request while retaining this
@@ -2414,7 +2414,7 @@ class PlayerService {
             ? refresh(anonymous)
             : accounts.runWithAccount(identity, (client) {
                 AppLog.instance.trace(
-                  'lib/services/player_service.dart::PlayerService._prepare.refreshWallet',
+                  'lib/services/player_service.dart::PlayerService._prepare.closure#3.closure#1',
                 );
                 return refresh(wallet == 'official' ? officialClient! : client);
               });
@@ -2431,7 +2431,7 @@ class PlayerService {
         cache: cache,
         release: () async {
           AppLog.instance.trace(
-            "lib/services/player_service.dart::PlayerService._prepare.closure#3",
+            "lib/services/player_service.dart::PlayerService._prepare.closure#4",
           );
 
           await _unmountCache(cache, uri);
@@ -3293,6 +3293,9 @@ class PlayerService {
   }
 
   Future<void> _endAutomaticAdvance(String? work) async {
+    AppLog.instance.trace(
+      "lib/services/player_service.dart::PlayerService._endAutomaticAdvance",
+    );
     try {
       await _driver.endTransition();
     } finally {
@@ -3330,6 +3333,9 @@ class PlayerService {
         final epoch = _epoch;
         delegated = true;
         _background(() async {
+          AppLog.instance.trace(
+            "lib/services/player_service.dart::PlayerService._finish.closure#1",
+          );
           try {
             await _advanceOrder(
               automatic: true,
@@ -3356,6 +3362,9 @@ class PlayerService {
           final expectedGeneration = generation, album = sourceAlbumId;
           delegated = true;
           unawaited(() async {
+            AppLog.instance.trace(
+              "lib/services/player_service.dart::PlayerService._finish.closure#2",
+            );
             try {
               await refreshAlbumTail(album);
             } catch (_) {

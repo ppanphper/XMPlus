@@ -73,6 +73,7 @@ String _accountError(Object error) {
 }
 
 String _balanceError(Object error) {
+  AppLog.instance.trace("lib/pages/account_page.dart::_balanceError");
   final code = error is XmlyException ? error.code : null;
   if (const {'network', 'network_error', 'http_error'}.contains(code)) {
     return '连接失败或超时，请检查网络。';
@@ -81,6 +82,7 @@ String _balanceError(Object error) {
 }
 
 Widget _balanceValue(BuildContext context, String? error, String value) {
+  AppLog.instance.trace("lib/pages/account_page.dart::_balanceValue");
   final theme = Theme.of(context);
   if (error != null) {
     return Text(
@@ -523,12 +525,15 @@ class _AccountPageState extends State<AccountPage> {
       _officialBalanceErrors.remove(identity);
 
       Future<void> queryLite() async {
+        AppLog.instance.trace(
+          "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.queryLite",
+        );
         try {
           final quota = await widget.accounts.runWithAccount(identity, (
             client,
           ) {
             AppLog.instance.trace(
-              "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.closure#1",
+              "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.queryLite.closure#1",
             );
             return widget.queryQuota?.call(identity) ?? client.queryQuota();
           });
@@ -537,11 +542,19 @@ class _AccountPageState extends State<AccountPage> {
           _recordAccountError(error, stack);
           _liteBalanceErrors[identity] = _balanceError(error);
         } finally {
-          if (mounted) setState(() {});
+          if (mounted)
+            setState(() {
+              AppLog.instance.trace(
+                "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.queryLite.closure#2",
+              );
+            });
         }
       }
 
       Future<void> queryOfficial() async {
+        AppLog.instance.trace(
+          "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.queryOfficial",
+        );
         try {
           final client = await widget.accounts.ensureOfficialClient(identity);
           _officialBalances[identity] = await XmlyBrowseReward(client)
@@ -550,7 +563,12 @@ class _AccountPageState extends State<AccountPage> {
           _recordAccountError(error, stack);
           _officialBalanceErrors[identity] = _balanceError(error);
         } finally {
-          if (mounted) setState(() {});
+          if (mounted)
+            setState(() {
+              AppLog.instance.trace(
+                "lib/pages/account_page.dart::_AccountPageState._quota.closure#1.queryOfficial.closure#1",
+              );
+            });
         }
       }
 
@@ -628,9 +646,17 @@ class _AccountPageState extends State<AccountPage> {
       'lib/pages/account_page.dart::_AccountPageState._claimLite',
     );
     return AppLog.instance.runWithErrorScope(() async {
+      AppLog.instance.trace(
+        "lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1",
+      );
       if (widget.accounts.liteClaiming(identity)) return;
       final messenger = ScaffoldMessenger.of(context);
-      setState(() => _error = null);
+      setState(() {
+        AppLog.instance.trace(
+          "lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1.closure#1",
+        );
+        _error = null;
+      });
       try {
         final quota = await widget.accounts.claimLiteReward(identity);
         await _storeQuota(identity, quota);
@@ -641,13 +667,23 @@ class _AccountPageState extends State<AccountPage> {
       } catch (error, stack) {
         _recordAccountError(error, stack);
         if (mounted) {
-          setState(() => _error = _accountError(error));
+          setState(() {
+            AppLog.instance.trace(
+              "lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1.closure#2",
+            );
+            _error = _accountError(error);
+          });
         } else if (messenger.mounted) {
           messenger.showSnackBar(SnackBar(content: Text(_accountError(error))));
         }
       } finally {
         widget.onChanged?.call();
-        if (mounted) setState(() {});
+        if (mounted)
+          setState(() {
+            AppLog.instance.trace(
+              "lib/pages/account_page.dart::_AccountPageState._claimLite.closure#1.closure#3",
+            );
+          });
       }
     });
   }

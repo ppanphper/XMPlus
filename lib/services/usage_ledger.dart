@@ -961,7 +961,7 @@ class UsageLedger {
         if (!newDevice && debt(identity) > quota.remainingSeconds) {
           await _write(identity, (ledger) {
             AppLog.instance.trace(
-              'lib/services/usage_ledger.dart::UsageLedger._settleLocked.limitToBalance',
+              'lib/services/usage_ledger.dart::UsageLedger._settleLocked.closure#1.closure#1',
             );
             ledger['usage_seconds'] = quota.remainingSeconds.toDouble();
           });

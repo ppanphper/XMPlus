@@ -67,7 +67,7 @@ class AppRuntime extends ChangeNotifier {
     });
     settlementHandlers.add(() {
       AppLog.instance.trace(
-        'lib/services/app_runtime.dart::AppRuntime.new.stopOfficial',
+        'lib/services/app_runtime.dart::AppRuntime.new.closure#3',
       );
       return closing
           ? officialLedger.captureForRestore()
@@ -75,7 +75,7 @@ class AppRuntime extends ChangeNotifier {
     });
     settlementHandlers.add(() {
       AppLog.instance.trace(
-        'lib/services/app_runtime.dart::AppRuntime.new.settleOfficial',
+        'lib/services/app_runtime.dart::AppRuntime.new.closure#4',
       );
       return closing ? officialLedger.settleForExit() : officialLedger.settle();
     });
@@ -95,7 +95,7 @@ class AppRuntime extends ChangeNotifier {
       checkAccount: _checkAutomaticAccount,
       loadCatalogue: (identity, albumId, cancelled, checkpoint) {
         AppLog.instance.trace(
-          "lib/services/app_runtime.dart::AppRuntime.new.closure#3",
+          "lib/services/app_runtime.dart::AppRuntime.new.closure#5",
         );
 
         final client = accounts.clientFor(identity);
@@ -104,7 +104,7 @@ class AppRuntime extends ChangeNotifier {
           storage.state['settings'] as Map,
           () {
             AppLog.instance.trace(
-              "lib/services/app_runtime.dart::AppRuntime.new.closure#3.closure#1",
+              "lib/services/app_runtime.dart::AppRuntime.new.closure#5.closure#1",
             );
             return XmlyCatalogue(client).album(albumId);
           },
@@ -114,11 +114,11 @@ class AppRuntime extends ChangeNotifier {
       },
       hasTask: (identity, trackId) {
         AppLog.instance.trace(
-          "lib/services/app_runtime.dart::AppRuntime.new.closure#4",
+          "lib/services/app_runtime.dart::AppRuntime.new.closure#6",
         );
         return downloads.tasks.any((task) {
           AppLog.instance.trace(
-            "lib/services/app_runtime.dart::AppRuntime.new.closure#4.closure#1",
+            "lib/services/app_runtime.dart::AppRuntime.new.closure#6.closure#1",
           );
           return task.track.id == trackId &&
               (task.accountIdentity == identity ||
@@ -127,7 +127,7 @@ class AppRuntime extends ChangeNotifier {
       },
       enqueueNew: (identity, track, allowed, cancelled) async {
         AppLog.instance.trace(
-          "lib/services/app_runtime.dart::AppRuntime.new.closure#5",
+          "lib/services/app_runtime.dart::AppRuntime.new.closure#7",
         );
 
         _checkAutomaticAccount(identity);
@@ -138,7 +138,7 @@ class AppRuntime extends ChangeNotifier {
           cancelled: cancelled,
           checkpoint: () async {
             AppLog.instance.trace(
-              "lib/services/app_runtime.dart::AppRuntime.new.closure#5.closure#1",
+              "lib/services/app_runtime.dart::AppRuntime.new.closure#7.closure#1",
             );
 
             if (!allowed()) throw const DownloadStopped();
@@ -151,7 +151,7 @@ class AppRuntime extends ChangeNotifier {
           batch,
           allowed: () {
             AppLog.instance.trace(
-              "lib/services/app_runtime.dart::AppRuntime.new.closure#5.closure#2",
+              "lib/services/app_runtime.dart::AppRuntime.new.closure#7.closure#2",
             );
 
             if (!allowed()) return false;
@@ -175,7 +175,7 @@ class AppRuntime extends ChangeNotifier {
       anonymous: anonymous,
       prepareDownload: (tracks, {String? accountIdentity}) {
         AppLog.instance.trace(
-          "lib/services/app_runtime.dart::AppRuntime.new.closure#6",
+          "lib/services/app_runtime.dart::AppRuntime.new.closure#8",
         );
         return prepareDownloads(
           tracks,
@@ -185,13 +185,13 @@ class AppRuntime extends ChangeNotifier {
       },
       confirmDownload: (batch) async {
         AppLog.instance.trace(
-          "lib/services/app_runtime.dart::AppRuntime.new.closure#7",
+          "lib/services/app_runtime.dart::AppRuntime.new.closure#9",
         );
         return await confirmDownload?.call(batch) ?? false;
       },
       exitApplication: () async {
         AppLog.instance.trace(
-          "lib/services/app_runtime.dart::AppRuntime.new.closure#8",
+          "lib/services/app_runtime.dart::AppRuntime.new.closure#10",
         );
 
         scheduledExit = true;
@@ -206,7 +206,7 @@ class AppRuntime extends ChangeNotifier {
     );
     pauseHandlers.add(() {
       AppLog.instance.trace(
-        "lib/services/app_runtime.dart::AppRuntime.new.closure#9",
+        "lib/services/app_runtime.dart::AppRuntime.new.closure#11",
       );
       return player.quiesce();
     });

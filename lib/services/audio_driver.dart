@@ -46,8 +46,16 @@ abstract class AudioDriver {
   Future<void> seek(double seconds);
   Future<void> setRate(double rate);
   Future<void> setVolume(double volume);
-  void beginTransition() {}
-  Future<void> endTransition() async {}
+  void beginTransition() {
+    AppLog.instance.trace(
+      "lib/services/audio_driver.dart::AudioDriver.beginTransition",
+    );
+  }
+  Future<void> endTransition() async {
+    AppLog.instance.trace(
+      "lib/services/audio_driver.dart::AudioDriver.endTransition",
+    );
+  }
   Future<void> close();
 }
 
@@ -146,11 +154,17 @@ class MediaKitAudioDriver implements AudioDriver {
 
   @override
   void beginTransition() {
+    AppLog.instance.trace(
+      "lib/services/audio_driver.dart::MediaKitAudioDriver.beginTransition",
+    );
     _transitionDepth++;
   }
 
   @override
   Future<void> endTransition() async {
+    AppLog.instance.trace(
+      "lib/services/audio_driver.dart::MediaKitAudioDriver.endTransition",
+    );
     if (_transitionDepth == 0) return;
     _transitionDepth--;
     if (_transitionDepth == 0 && !_playRequested) await _releaseFocus();

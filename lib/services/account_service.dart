@@ -173,6 +173,9 @@ class AccountService {
     );
     clientFor(identity);
     return _officialDevices.synchronized(() async {
+      AppLog.instance.trace(
+        "lib/services/account_service.dart::AccountService.officialDeviceId.closure#1",
+      );
       final key = _officialDeviceKey(identity);
       final saved = await secrets.read(key);
       if (saved != null &&
@@ -195,13 +198,13 @@ class AccountService {
     final value = deviceId.trim();
     await _accounts.synchronized(() async {
       AppLog.instance.trace(
-        'lib/services/account_service.dart::AccountService.setOfficialDeviceId.change',
+        'lib/services/account_service.dart::AccountService.setOfficialDeviceId.closure#1',
       );
       try {
         await _prepareChange();
         await _officialDevices.synchronized(() async {
           AppLog.instance.trace(
-            'lib/services/account_service.dart::AccountService.setOfficialDeviceId.save',
+            'lib/services/account_service.dart::AccountService.setOfficialDeviceId.closure#1.closure#1',
           );
           if (value.isEmpty) {
             await secrets.delete(_officialDeviceKey(identity));
@@ -240,20 +243,20 @@ class AccountService {
       mainApp: true,
       trackReader: (client, number) {
         AppLog.instance.trace(
-          'lib/services/account_service.dart::AccountService.ensureOfficialClient.trackReader',
+          'lib/services/account_service.dart::AccountService.ensureOfficialClient.closure#1',
         );
         return XmlyBrowseReward(client).trackInfo(number);
       },
       quotaReader: (client) async {
         AppLog.instance.trace(
-          'lib/services/account_service.dart::AccountService.ensureOfficialClient.quotaReader',
+          'lib/services/account_service.dart::AccountService.ensureOfficialClient.closure#2',
         );
         final balance = await XmlyBrowseReward(client).queryBalance();
         return _officialQuota(balance);
       },
       usageReporter: (client, seconds, balanceBefore, trackId) async {
         AppLog.instance.trace(
-          'lib/services/account_service.dart::AccountService.ensureOfficialClient.usageReporter',
+          'lib/services/account_service.dart::AccountService.ensureOfficialClient.closure#3',
         );
         final balance = await XmlyBrowseReward(client).decreaseSeconds(
           seconds,
@@ -325,7 +328,12 @@ class AccountService {
     });
   }
 
-  bool liteClaiming(String identity) => _liteClaims.containsKey(identity);
+  bool liteClaiming(String identity) {
+    AppLog.instance.trace(
+      "lib/services/account_service.dart::AccountService.liteClaiming",
+    );
+    return _liteClaims.containsKey(identity);
+  }
 
   Future<void> waitForLiteClaim(String identity) async {
     AppLog.instance.trace(
@@ -359,6 +367,9 @@ class AccountService {
     final client = clientFor(identity);
     late final Future<Quota> claim;
     claim = () async {
+      AppLog.instance.trace(
+        "lib/services/account_service.dart::AccountService.claimLiteReward.closure#1",
+      );
       try {
         return await XmlyRewards(client)
             .claimNext(shouldContinue: shouldContinue);
